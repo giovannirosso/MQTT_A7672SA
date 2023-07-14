@@ -31,6 +31,7 @@ struct mqtt_message
 {
     String topic;
     String data;
+    size_t length;
 };
 
 enum registration_status

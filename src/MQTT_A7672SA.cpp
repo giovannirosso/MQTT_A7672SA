@@ -134,21 +134,28 @@ void A7672SA::simcomm_response_parser(const char *data) //++ Parser to parse AT 
     }
     else if (strstr(data, "+CMQTTRECV:"))
     {
-        String data_string = "";
         mqtt_message message;
 
-        for (int j = 0; j < strlen(data); j++)
-        {
-            data_string += data[j];
-        }
+        String payloadString(data);
 
-        message.topic = data_string.substring(data_string.indexOf("\"") + 1, data_string.indexOf("\"", data_string.indexOf("\"") + 1));
-        message.data = data_string.substring(data_string.indexOf("\"", data_string.indexOf("\"", data_string.indexOf("\"") + 1) + 1) + 1, data_string.lastIndexOf("\""));
+        int firstCommaIndex = payloadString.indexOf(',');
+        int secondCommaIndex = payloadString.indexOf(',', firstCommaIndex + 1);
+        int thirdCommaIndex = payloadString.indexOf(',', secondCommaIndex + 1);
+
+        message.topic = payloadString.substring(firstCommaIndex + 2, secondCommaIndex - 1);
+        message.topic.trim();
+
+        String messageLenStr = payloadString.substring(secondCommaIndex + 1, thirdCommaIndex);
+        messageLenStr.trim();
+        message.length = messageLenStr.toInt();
+
+        message.data = payloadString.substring(thirdCommaIndex + 2, thirdCommaIndex + 2 + message.length);
+        message.data.trim();
 
         if (this->mqtt_callback != NULL)
             this->mqtt_callback(message);
     }
-    else if (strstr(data, GSM_NL "+CMQTTCONNLOST: 0,1" GSM_NL))
+    else if (strstr(data, GSM_NL "+CMQTTCONNLOST:"))
     {
         ESP_LOGI("PARSER", "MQTT Disconnected");
         this->mqtt_connected = false;
