@@ -1,0 +1,30 @@
+{
+  "name": "MQTT_A7672SA",
+  "version": "0.1",
+  "description": "A small ESP32 library for A7672SA module, that just works.",
+  "keywords": "GSM, AT commands, AT, SIMCOM, A7672SA, MQTT, LTE, LTE-M",
+  "authors": [
+    {
+      "name": "Givanni de Rosso Unruh",
+      "url": "https://github.com/giovannirosso",
+      "maintainer": true
+    }
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/giovannirosso/MQTT_A7672SA.git"
+  },
+  "homepage": "https://github.com/giovannirosso/MQTT_A7672SA",
+  "export": {
+    "include": [
+      "library.json",
+      "library.properties",
+      "README.md",
+      "src/*",
+      "examples/*"
+    ]
+  },
+  "frameworks": ["arduino", "espressif32"],
+  "platforms": "*",
+  "headers": "MQTT_A7672SA.h"
+}

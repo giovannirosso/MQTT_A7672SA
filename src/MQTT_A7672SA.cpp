@@ -459,14 +459,15 @@ bool A7672SA::mqtt_connect(const char *host, uint16_t port, const char *clientId
                         this->send_cmd_to_simcomm("MQTT_CONNECT", "AT+CMQTTCFG=\"argtopic\",0,1,1" GSM_NL);
                     if (this->wait_response(timeout))
                     {
+                        char *data;
                         if (username == NULL || username == "")
                         {
-                            char *data = (char *)malloc(strlen(host) + 40);
+                            data = (char *)malloc(strlen(host) + 40);
                             sprintf(data, "AT+CMQTTCONNECT=0,\"tcp://%s:%d\",%d,1" GSM_NL, host, port, keepalive);
                         }
                         else
                         {
-                            char *data = (char *)malloc(strlen(host) + strlen(clientId) + strlen(password) + 40);
+                            data = (char *)malloc(strlen(host) + strlen(clientId) + strlen(password) + 40);
                             sprintf(data, "AT+CMQTTCONNECT=0,\"tcp://%s:%d\",%d,1,\"%s\",\"%s\"" GSM_NL, host, port, keepalive, clientId, password);
                         }
                         printf("data: %s\n", data);
@@ -490,14 +491,15 @@ bool A7672SA::mqtt_connect(const char *host, uint16_t port, const char *clientId
                 this->send_cmd_to_simcomm("MQTT_CONNECT", "AT+CMQTTCFG=\"argtopic\",0,1,1" GSM_NL);
                 if (this->wait_response(timeout))
                 {
+                    char *data;
                     if (username == NULL || username == "")
                     {
-                        char *data = (char *)malloc(strlen(host) + 40);
+                        data = (char *)malloc(strlen(host) + 40);
                         sprintf(data, "AT+CMQTTCONNECT=0,\"tcp://%s:%d\",%d,1" GSM_NL, host, port, keepalive);
                     }
                     else
                     {
-                        char *data = (char *)malloc(strlen(host) + strlen(clientId) + strlen(password) + 40);
+                        data = (char *)malloc(strlen(host) + strlen(clientId) + strlen(password) + 40);
                         sprintf(data, "AT+CMQTTCONNECT=0,\"tcp://%s:%d\",%d,1,\"%s\",\"%s\"" GSM_NL, host, port, keepalive, clientId, password);
                     }
                     printf("data: %s\n", data);
