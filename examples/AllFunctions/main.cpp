@@ -5,17 +5,23 @@ A7672SA modem(GPIO_NUM_17, GPIO_NUM_16, GPIO_NUM_27);
 
 #define APN "inlog.claro.com.br"
 
+bool connected = false;
+
 void mqttCallback(mqtt_message &message)
 {
-    printf("CALLBACK TOPIC: %s\n", message.topic);
-    printf("CALLBACK DATA: %s\n", message.data);
+    printf("CALLBACK TOPIC: %s\n", message.topic.c_str());
+    printf("CALLBACK DATA: %s\n", message.data.c_str());
 }
 
 void setup()
 {
     modem.begin();
 
-    modem.register_callback(mqttCallback);
+    modem.on_message_callback(mqttCallback);
+
+    modem.on_mqtt_status([](bool mqtt_connected)
+                         { ESP_LOGI("MQTT_STATUS", "%d", mqtt_connected);
+                         connected = mqtt_connected; });
 
 start:
 
@@ -87,8 +93,8 @@ start:
         vTaskDelay(2000 / portTICK_PERIOD_MS);
     } while (time == "");
 
-    bool mqtt = modem.mqtt_connect("test.mosquitto.org", 1883, "A7672SA");
-    ESP_LOGI("MQTT_CONNECTED_NO_SSL -> ", "%d", mqtt);
+    modem.mqtt_connect("test.mosquitto.org", 1883, "A7672SA");
+    ESP_LOGI("MQTT_CONNECTED_NO_SSL -> ", "%d", connected);
 
     bool sub = modem.mqtt_subscribe("teste/sub", 0, 5000);
     ESP_LOGI("MQTT_SUBSCRIBE -> ", "%d", sub);
@@ -104,8 +110,8 @@ start:
     bool cert = modem.set_ca_cert(ca_cert, "ca.pem", sizeof(ca_cert), 5000);
     ESP_LOGI("CERT", "%d", cert);
 
-    mqtt = modem.mqtt_connect("test.mosquitto.org", 8883, "A7672SA", NULL, NULL, true, "ca.pem");
-    ESP_LOGI("MQTT_CONNECTED_SSL -> ", "%d", mqtt);
+    modem.mqtt_connect("test.mosquitto.org", 8883, "A7672SA", NULL, NULL, true, "ca.pem");
+    ESP_LOGI("MQTT_CONNECTED_SSL -> ", "%d", connected);
 
     sub = modem.mqtt_subscribe("teste/sub", 0, 5000);
     ESP_LOGI("MQTT_SUBSCRIBE -> ", "%d", sub);
