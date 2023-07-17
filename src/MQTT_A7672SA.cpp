@@ -151,15 +151,17 @@ void A7672SA::simcomm_response_parser(const char *data) //++ Parser to parse AT 
         int secondCommaIndex = payloadString.indexOf(',', firstCommaIndex + 1);
         int thirdCommaIndex = payloadString.indexOf(',', secondCommaIndex + 1);
 
-        message.topic = payloadString.substring(firstCommaIndex + 2, secondCommaIndex - 1);
-        message.topic.trim();
+        String topic = payloadString.substring(firstCommaIndex + 2, secondCommaIndex - 1).c_str();
+        topic.trim();
+        strcpy(message.topic, topic.c_str());
 
         String messageLenStr = payloadString.substring(secondCommaIndex + 1, thirdCommaIndex);
         messageLenStr.trim();
         message.length = messageLenStr.toInt();
 
-        message.data = payloadString.substring(thirdCommaIndex + 2, thirdCommaIndex + 2 + message.length);
-        message.data.trim();
+        String payload = payloadString.substring(thirdCommaIndex + 2, thirdCommaIndex + 2 + message.length);
+        payload.trim();
+        strcpy(message.payload, payload.c_str());
 
         if (this->on_message_callback_ != NULL)
             this->on_message_callback_(message);

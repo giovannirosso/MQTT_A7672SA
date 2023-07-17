@@ -29,8 +29,8 @@ static const char GSM_ERROR[] GSM_PROGMEM = GSM_NL "ERROR" GSM_NL;
 
 struct mqtt_message
 {
-    String topic;
-    String data;
+    char *topic;
+    char *payload;
     size_t length;
 };
 
