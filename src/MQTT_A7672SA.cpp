@@ -106,6 +106,9 @@ void A7672SA::simcomm_response_parser(const char *data) //++ Parser to parse AT 
     {
         ESP_LOGI("PARSER", "MQTT Connected");
         this->mqtt_connected = true;
+
+        if (this->mqtt_status_ != NULL)
+            this->mqtt_status_(this->mqtt_connected);
     }
     // else if (strstr(data, "+CMQTTSTART: 19" GSM_NL))
     // {
@@ -152,13 +155,16 @@ void A7672SA::simcomm_response_parser(const char *data) //++ Parser to parse AT 
         message.data = payloadString.substring(thirdCommaIndex + 2, thirdCommaIndex + 2 + message.length);
         message.data.trim();
 
-        if (this->mqtt_callback != NULL)
-            this->mqtt_callback(message);
+        if (this->on_message_callback_ != NULL)
+            this->on_message_callback_(message);
     }
     else if (strstr(data, GSM_NL "+CMQTTCONNLOST:"))
     {
         ESP_LOGI("PARSER", "MQTT Disconnected");
         this->mqtt_connected = false;
+
+        if (this->mqtt_status_ != NULL)
+            this->mqtt_status_(this->mqtt_connected);
     }
     else
     {
@@ -427,7 +433,6 @@ bool A7672SA::set_ca_cert(const char *ca_cert, const char *ca_name, size_t cert_
 {
     char data[100];
     sprintf(data, "AT+CCERTDOWN=\"%s\",%d" GSM_NL, ca_name, cert_size);
-    printf("data: %s\n", data);
     this->send_cmd_to_simcomm("SET_CA_CERT", data);
     if (this->wait_input(timeout))
     {
@@ -477,7 +482,6 @@ bool A7672SA::mqtt_connect(const char *host, uint16_t port, const char *clientId
                             data = (char *)malloc(strlen(host) + strlen(clientId) + strlen(password) + 40);
                             sprintf(data, "AT+CMQTTCONNECT=0,\"tcp://%s:%d\",%d,1,\"%s\",\"%s\"" GSM_NL, host, port, keepalive, clientId, password);
                         }
-                        printf("data: %s\n", data);
                         this->send_cmd_to_simcomm("MQTT_CONNECT", data);
                         return this->wait_to_connect(timeout);
                     }
@@ -509,7 +513,6 @@ bool A7672SA::mqtt_connect(const char *host, uint16_t port, const char *clientId
                         data = (char *)malloc(strlen(host) + strlen(clientId) + strlen(password) + 40);
                         sprintf(data, "AT+CMQTTCONNECT=0,\"tcp://%s:%d\",%d,1,\"%s\",\"%s\"" GSM_NL, host, port, keepalive, clientId, password);
                     }
-                    printf("data: %s\n", data);
                     this->send_cmd_to_simcomm("MQTT_CONNECT", data);
                     return this->wait_to_connect(timeout);
                 }
@@ -524,6 +527,9 @@ bool A7672SA::mqtt_disconnect(uint32_t timeout)
     if (this->wait_response(timeout))
     {
         this->mqtt_connected = false;
+
+        if (this->mqtt_status_ != NULL)
+            this->mqtt_status_(this->mqtt_connected);
         this->send_cmd_to_simcomm("MQTT_DISCONNECT", "AT+CMQTTREL=0" GSM_NL);
     }
     this->wait_response(timeout);

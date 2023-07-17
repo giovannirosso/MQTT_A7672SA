@@ -61,7 +61,8 @@ private:
     char *at_response;
     uint32_t rx_buffer_size;
 
-    void (*mqtt_callback)(mqtt_message &message);
+    void (*on_message_callback_)(mqtt_message &message);
+    void (*mqtt_status_)(bool mqtt_connected);
 
     void rx_task();
     static void rx_taskImpl(void *pvParameters);
@@ -75,9 +76,14 @@ public:
     A7672SA(gpio_num_t tx_pin, gpio_num_t rx_pin, gpio_num_t en_pin, int32_t baud_rate = 115200, uint32_t rx_buffer_size = 1024);
     ~A7672SA();
 
-    void register_callback(void (*callback)(mqtt_message &message))
+    void on_message_callback(void (*callback)(mqtt_message &message))
     {
-        mqtt_callback = callback;
+        on_message_callback_ = callback;
+    }
+
+    void on_mqtt_status(void (*callback)(bool mqtt_connected))
+    {
+        mqtt_status_ = callback;
     }
 
     bool wait_response(uint32_t timeout = 1000);
