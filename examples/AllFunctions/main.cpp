@@ -9,8 +9,8 @@ bool connected = false;
 
 void mqttCallback(mqtt_message &message)
 {
-    printf("CALLBACK TOPIC: %s\n", message.topic.c_str());
-    printf("CALLBACK DATA: %s\n", message.data.c_str());
+    printf("CALLBACK TOPIC: %s\n", message.topic);
+    printf("CALLBACK DATA: %s\n", message.payload);
 }
 
 void setup()

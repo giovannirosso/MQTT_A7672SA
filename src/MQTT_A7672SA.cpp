@@ -153,6 +153,7 @@ void A7672SA::simcomm_response_parser(const char *data) //++ Parser to parse AT 
 
         String topic = payloadString.substring(firstCommaIndex + 2, secondCommaIndex - 1).c_str();
         topic.trim();
+        message.topic = (char *)malloc(topic.length() + 1);
         strcpy(message.topic, topic.c_str());
 
         String messageLenStr = payloadString.substring(secondCommaIndex + 1, thirdCommaIndex);
@@ -161,6 +162,7 @@ void A7672SA::simcomm_response_parser(const char *data) //++ Parser to parse AT 
 
         String payload = payloadString.substring(thirdCommaIndex + 2, thirdCommaIndex + 2 + message.length);
         payload.trim();
+        message.payload = (char *)malloc(payload.length() + 1);
         strcpy(message.payload, payload.c_str());
 
         if (this->on_message_callback_ != NULL)
