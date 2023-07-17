@@ -6,6 +6,12 @@
 
 #include "MQTT_A7672SA.h"
 
+A7672SA::A7672SA()
+{
+    this->at_ready = false;
+    this->mqtt_connected = false;
+}
+
 A7672SA::A7672SA(gpio_num_t tx_pin, gpio_num_t rx_pin, gpio_num_t en_pin, int32_t baud_rate, uint32_t rx_buffer_size)
 {
     this->at_ready = false;

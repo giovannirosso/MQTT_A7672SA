@@ -73,6 +73,7 @@ private:
     int send_cmd_to_simcomm(const char *logName, const char *data);
 
 public:
+    A7672SA();
     A7672SA(gpio_num_t tx_pin, gpio_num_t rx_pin, gpio_num_t en_pin, int32_t baud_rate = 115200, uint32_t rx_buffer_size = 1024);
     ~A7672SA();
 
