@@ -8,18 +8,24 @@
 
 A7672SA::A7672SA()
 {
+    this->at_ok = false;
     this->at_ready = false;
+    this->at_input = false;
+    this->at_publish = false;
     this->mqtt_connected = false;
 }
 
 A7672SA::A7672SA(gpio_num_t tx_pin, gpio_num_t rx_pin, gpio_num_t en_pin, int32_t baud_rate, uint32_t rx_buffer_size)
 {
+    this->at_ok = false;
     this->at_ready = false;
+    this->at_input = false;
+    this->at_publish = false;
+    this->mqtt_connected = false;
     this->tx_pin = tx_pin;
     this->rx_pin = rx_pin;
     this->en_pin = en_pin;
     this->rx_buffer_size = rx_buffer_size;
-    this->mqtt_connected = false;
 
     const uart_config_t uart_config =
         {
@@ -131,15 +137,22 @@ void A7672SA::simcomm_response_parser(const char *data) //++ Parser to parse AT 
         ESP_LOGI("PARSER", "AT Successful");
         this->at_ok = true;
     }
+    else if (strstr(data, GSM_NL ">"))
+    {
+        ESP_LOGI("PARSER", "AT Input");
+        this->at_input = true;
+    }
+    else if (strstr(data, "+CMQTTPUB: 0,0" GSM_NL))
+    {
+        ESP_LOGI("PARSER", "Publish OK");
+        this->at_publish = true;
+    }
     else if (strstr(data, GSM_ERROR)) //++ AT Response for ERROR
     {
         ESP_LOGI("PARSER", "AT Failed");
         this->at_ok = false;
-    }
-    else if (strstr(data, ">"))
-    {
-        ESP_LOGI("PARSER", "AT Input");
-        this->at_input = true;
+        this->at_input = false;
+        this->at_publish = false;
     }
     else if (strstr(data, "+CMQTTRECV:"))
     {
@@ -216,32 +229,56 @@ int A7672SA::send_cmd_to_simcomm(const char *logName, const char *data) //++ Sen
 
 bool A7672SA::wait_response(uint32_t timeout)
 {
+    this->at_input = false;
     this->at_ok = false;
+    this->at_publish = false;
     uint32_t start = millis();
-    while (millis() - start < timeout)
+    while (!this->at_ok && millis() - start < timeout)
     {
-        if (this->at_ok)
+        const int rxBytes = uart_read_bytes(UART_NUM_1, this->at_response, this->rx_buffer_size, 300 / portTICK_RATE_MS);
+        if (rxBytes > 0)
         {
-            return true;
+            this->at_response[rxBytes] = 0;
+            this->simcomm_response_parser(this->at_response); //++ Call the AT Response Parser Function
         }
-        vTaskDelay(100 / portTICK_PERIOD_MS);
     }
-    return false;
+    return this->at_ok;
 }
 
 bool A7672SA::wait_input(uint32_t timeout)
 {
     this->at_input = false;
+    this->at_ok = false;
+    this->at_publish = false;
     uint32_t start = millis();
-    while (millis() - start < timeout)
+    while (!this->at_input && millis() - start < timeout)
     {
-        if (this->at_input)
+        const int rxBytes = uart_read_bytes(UART_NUM_1, this->at_response, this->rx_buffer_size, 300 / portTICK_RATE_MS);
+        if (rxBytes > 0)
         {
-            return true;
+            this->at_response[rxBytes] = 0;
+            this->simcomm_response_parser(this->at_response); //++ Call the AT Response Parser Function
         }
-        vTaskDelay(100 / portTICK_PERIOD_MS);
     }
-    return false;
+    return this->at_input;
+}
+
+bool A7672SA::wait_publish(uint32_t timeout)
+{
+    this->at_input = false;
+    this->at_ok = false;
+    this->at_publish = false;
+    uint32_t start = millis();
+    while (!this->at_publish && millis() - start < timeout)
+    {
+        const int rxBytes = uart_read_bytes(UART_NUM_1, this->at_response, this->rx_buffer_size, 300 / portTICK_RATE_MS);
+        if (rxBytes > 0)
+        {
+            this->at_response[rxBytes] = 0;
+            this->simcomm_response_parser(this->at_response); //++ Call the AT Response Parser Function
+        }
+    }
+    return this->at_publish;
 }
 
 bool A7672SA::wait_to_connect(uint32_t timeout)
@@ -547,15 +584,16 @@ bool A7672SA::mqtt_disconnect(uint32_t timeout)
     return this->wait_response(timeout);
 }
 
-bool A7672SA::mqtt_publish(const char *topic, const char *data, uint16_t qos, uint32_t timeout)
+bool A7672SA::mqtt_publish(const char *topic, char *data, uint16_t qos, uint32_t timeout)
 {
-    char *data_string = (char *)malloc(strlen(data) + strlen(topic) + 30);
+    char *data_string = (char *)malloc(strlen(topic) + 30);
     sprintf(data_string, "AT+CMQTTPUB=0,\"%s\",%d,%d" GSM_NL, topic, qos, strlen(data));
     this->send_cmd_to_simcomm("MQTT_PUBLISH", data_string);
     if (this->wait_input(timeout))
     {
-        this->send_cmd_to_simcomm("MQTT_PUBLISH", data);
-        return this->wait_response(timeout);
+        int tx_bytes = uart_write_bytes(UART_NUM_1, data, strlen(data));
+        ESP_LOGI("MQTT_PUBLISH", "Wrote %d bytes", tx_bytes);
+        return this->wait_publish(timeout);
     }
     return false;
 }
