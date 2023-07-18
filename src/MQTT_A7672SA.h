@@ -112,7 +112,7 @@ public:
     bool set_ca_cert(const char *ca_cert, const char *ca_name, size_t cert_size, uint32_t timeout = 10000);
     bool mqtt_connect(const char *host, uint16_t port, const char *clientId, const char *username = NULL, const char *password = NULL, bool ssl = false, const char *ca_name = "ca.pem", uint16_t keepalive = 60, uint32_t timeout = 10000);
     bool mqtt_disconnect(uint32_t timeout = 1000);
-    bool mqtt_publish(const char *topic, char *data, uint16_t qos, uint32_t timeout = 1000);
+    bool mqtt_publish(const char *topic, const char *data, uint16_t qos, uint32_t timeout = 1000);
     bool mqtt_subscribe(const char *topic, uint16_t qos, uint32_t timeout = 1000);
     bool mqtt_is_connected();
 };
