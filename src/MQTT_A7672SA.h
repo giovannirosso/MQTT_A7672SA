@@ -46,6 +46,14 @@ enum registration_status
     REGISTERED_SMS_ONLY_ROAMING = 7
 };
 
+enum mqtt_status // todo:
+{
+    MQTT_CONNECTED = 0,
+    MQTT_TIMEOUT = 1,
+    MQTT_CLIENT_USED = 2,
+    MQTT_DISCONNECTED = 3
+};
+
 class A7672SA
 {
 private:
@@ -63,7 +71,7 @@ private:
     uint32_t rx_buffer_size;
 
     void (*on_message_callback_)(mqtt_message &message);
-    void (*mqtt_status_)(bool mqtt_connected);
+    void (*on_mqtt_status_)(mqtt_status &status);
 
     void rx_task();
     static void rx_taskImpl(void *pvParameters);
@@ -83,9 +91,9 @@ public:
         on_message_callback_ = callback;
     }
 
-    void on_mqtt_status(void (*callback)(bool mqtt_connected))
+    void on_mqtt_status(void (*callback)(mqtt_status &status))
     {
-        mqtt_status_ = callback;
+        on_mqtt_status_ = callback;
     }
 
     bool wait_input(uint32_t timeout = 1000);
@@ -110,25 +118,11 @@ public:
     String get_local_ip(uint32_t timeout = 1000);
 
     bool set_ca_cert(const char *ca_cert, const char *ca_name, size_t cert_size, uint32_t timeout = 10000);
-    bool mqtt_connect(const char *host, uint16_t port, const char *clientId, const char *username = NULL, const char *password = NULL, bool ssl = false, const char *ca_name = "ca.pem", uint16_t keepalive = 60, uint32_t timeout = 10000);
+    bool mqtt_connect(const char *host, uint16_t port, const char *clientId, const char *username = nullptr, const char *password = nullptr, bool ssl = false, const char *ca_name = "ca.pem", uint16_t keepalive = 60, uint32_t timeout = 10000);
     bool mqtt_disconnect(uint32_t timeout = 1000);
     bool mqtt_publish(const char *topic, const char *data, uint16_t qos, uint32_t timeout = 1000);
     bool mqtt_subscribe(const char *topic, uint16_t qos, uint32_t timeout = 1000);
     bool mqtt_is_connected();
 };
-
-// enum mqtt_status //todo:
-// {
-//     MQTT_CONNECTED = 0,
-//     MQTT_TIMEOUT = 17,
-//     MQTT_CLIENT_USED = 19,
-//     MQTT_CLIENT_NOT_AQUIRED = 20,
-//     MQTT_CLIENT_NOT_RELEASED = 21,
-//     MQTT_INVALID_USER_PASSWORD = 30,
-//     MQTT_NOT_AUTHORIZED = 31,
-//     MQTT_HANDSHAKE_FAIL = 32,
-//     MQTT_NOT_SET_CERT = 33,
-//     MQTT_DISCONNECTED_FAIL = 35
-// };
 
 #endif // MQTT_A7672SA_H_
