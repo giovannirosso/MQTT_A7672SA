@@ -79,7 +79,6 @@ private:
     static void tx_taskImpl(void *pvParameters);
 
     void simcomm_response_parser(const char *data);
-    int send_cmd_to_simcomm(const char *logName, const char *data);
 
 public:
     A7672SA();
@@ -95,6 +94,8 @@ public:
     {
         on_mqtt_status_ = callback;
     }
+
+    int send_cmd_to_simcomm(const char *logName, const char *data);
 
     bool wait_input(uint32_t timeout = 1000);
     bool wait_publish(uint32_t timeout = 10000);
@@ -118,9 +119,11 @@ public:
     String get_local_ip(uint32_t timeout = 1000);
 
     bool set_ca_cert(const char *ca_cert, const char *ca_name, size_t cert_size, uint32_t timeout = 10000);
-    bool mqtt_connect(const char *host, uint16_t port, const char *clientId, const char *username = nullptr, const char *password = nullptr, bool ssl = false, const char *ca_name = "ca.pem", uint16_t keepalive = 60, uint32_t timeout = 10000);
+    bool mqtt_connect(const char *host, uint16_t port, const char *clientId, bool clean_session = true, const char *username = nullptr, const char *password = nullptr, bool ssl = false, const char *ca_name = "ca.pem", uint16_t keepalive = 60, uint32_t timeout = 10000);
     bool mqtt_disconnect(uint32_t timeout = 1000);
+    bool mqtt_release_client(uint32_t timeout = 1000);
     bool mqtt_publish(const char *topic, const char *data, uint16_t qos, uint32_t timeout = 1000);
+    bool mqtt_subscribe_topics(const char *topic[10], int n_topics, uint16_t qos, uint32_t timeout = 1000);
     bool mqtt_subscribe(const char *topic, uint16_t qos, uint32_t timeout = 1000);
     bool mqtt_is_connected();
 };
