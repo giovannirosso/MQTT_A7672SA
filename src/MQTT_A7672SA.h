@@ -30,7 +30,7 @@ static const char GSM_ERROR[] GSM_PROGMEM = GSM_NL "ERROR" GSM_NL;
 struct mqtt_message
 {
     char *topic;
-    char *payload;
+    uint8_t *payload;
     size_t length;
 };
 
@@ -48,10 +48,10 @@ enum registration_status
 
 enum mqtt_status // todo:
 {
-    MQTT_CONNECTED = 0,
-    MQTT_TIMEOUT = 1,
-    MQTT_CLIENT_USED = 2,
-    MQTT_DISCONNECTED = 3
+    A7672SA_MQTT_CONNECTED = 0,
+    A7672SA_MQTT_TIMEOUT = 1,
+    A7672SA_MQTT_CLIENT_USED = 2,
+    A7672SA_MQTT_DISCONNECTED = 3
 };
 
 class A7672SA
@@ -122,8 +122,8 @@ public:
     bool mqtt_connect(const char *host, uint16_t port, const char *clientId, bool clean_session = true, const char *username = nullptr, const char *password = nullptr, bool ssl = false, const char *ca_name = "ca.pem", uint16_t keepalive = 60, uint32_t timeout = 10000);
     bool mqtt_disconnect(uint32_t timeout = 1000);
     bool mqtt_release_client(uint32_t timeout = 1000);
-    bool mqtt_publish(const char *topic, const char *data, uint16_t qos, uint32_t timeout = 1000);
-    bool mqtt_subscribe_topics(const char *topic[10], int n_topics, uint16_t qos, uint32_t timeout = 1000);
+    bool mqtt_publish(const char *topic, const char *data, uint16_t qos = 0, uint32_t timeout = 1000);
+    bool mqtt_subscribe_topics(const char *topic[10], int n_topics = 10, uint16_t qos = 0, uint32_t timeout = 1000);
     bool mqtt_subscribe(const char *topic, uint16_t qos, uint32_t timeout = 1000);
     bool mqtt_is_connected();
 };

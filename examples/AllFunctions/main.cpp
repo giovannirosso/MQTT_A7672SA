@@ -11,7 +11,7 @@ bool reset = false;
 void mqttStatusCallback(mqtt_status &status)
 {
     ESP_LOGI("MQTT_STATUS", "%d", status);
-    connected = status == MQTT_CONNECTED;
+    connected = status == A7672SA_MQTT_CONNECTED;
     ESP_LOGI("MQTT_CONNECTED -> ", "%d", connected);
 }
 
@@ -20,8 +20,9 @@ void mqttCallback(mqtt_message &message)
     printf("CALLBACK TOPIC: %s\n", message.topic);
     printf("CALLBACK DATA: %s\n", message.payload);
 
-    if (strcmp(message.topic, "teste/sub") == 0 && strcmp(message.payload, "TESTE") == 0)
+    if (strcmp(message.topic, "teste/sub") == 0)
     {
+        ESP_LOGI("MQTT_RECEVEID -> ", "%s", message.payload);
         modem.mqtt_publish("teste/pub", "OK", 0, 5000);
     }
 }

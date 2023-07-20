@@ -119,7 +119,7 @@ void A7672SA::simcomm_response_parser(const char *data) //++ Parser to parse AT 
         ESP_LOGI("PARSER", "MQTT Connected");
         this->mqtt_connected = true;
 
-        mqtt_status status = MQTT_CONNECTED;
+        mqtt_status status = A7672SA_MQTT_CONNECTED;
 
         if (this->on_mqtt_status_ != NULL)
             this->on_mqtt_status_(status);
@@ -130,7 +130,7 @@ void A7672SA::simcomm_response_parser(const char *data) //++ Parser to parse AT 
         this->at_ok = false;
         this->mqtt_connected = false;
 
-        mqtt_status status = MQTT_CLIENT_USED;
+        mqtt_status status = A7672SA_MQTT_CLIENT_USED;
 
         if (this->on_mqtt_status_ != NULL)
             this->on_mqtt_status_(status);
@@ -185,14 +185,14 @@ void A7672SA::simcomm_response_parser(const char *data) //++ Parser to parse AT 
 
         String payload = payloadString.substring(thirdCommaIndex + 2, thirdCommaIndex + 2 + message.length);
         payload.trim();
-        message.payload = (char *)malloc(payload.length() + 1);
-        strcpy(message.payload, payload.c_str());
+        message.payload = new uint8_t[message.length];
+        memcpy(message.payload, payload.c_str(), message.length);
 
         if (this->on_message_callback_ != NULL)
             this->on_message_callback_(message);
 
         free(message.topic);
-        free(message.payload);
+        delete[] message.payload;
     }
     else if (strstr(data, GSM_NL "+CMQTTCONNLOST:"))
     {
@@ -584,7 +584,7 @@ bool A7672SA::mqtt_disconnect(uint32_t timeout)
     this->send_cmd_to_simcomm("MQTT_DISCONNECT", "AT+CMQTTDISC=0,120" GSM_NL);
     if (this->wait_response(timeout))
     {
-        mqtt_status status = MQTT_DISCONNECTED;
+        mqtt_status status = A7672SA_MQTT_DISCONNECTED;
 
         this->mqtt_connected = false;
 
