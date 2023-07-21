@@ -23,7 +23,7 @@ void mqttCallback(mqtt_message &message)
     if (strcmp(message.topic, "teste/sub") == 0)
     {
         ESP_LOGI("MQTT_RECEVEID -> ", "%s", message.payload);
-        modem.mqtt_publish("teste/pub", "OK", 0, 5000);
+        modem.mqtt_publish("teste/pub", "OK", strlen("OK"), 0, 5000);
     }
 }
 
@@ -113,11 +113,11 @@ start:
     }
 
     bool sub = false;
-    const char *topics1[10] = {"teste/sub0", "teste/sub1", "teste/sub2", "teste/sub3", "teste/sub4", "teste/sub5", "teste/sub6", "teste/sub7", "teste/sub8", "teste/sub9"};
-    sub = modem.mqtt_subscribe_topics(topics1, 10, 0, 5000);
+    const char *topics[10] = {"teste/sub0", "teste/sub1", "teste/sub2", "teste/sub3", "teste/sub4", "teste/sub5", "teste/sub6", "teste/sub7", "teste/sub8", "teste/sub9"};
+    sub = modem.mqtt_subscribe_topics(topics, 10, 0, 5000);
     ESP_LOGI("MQTT_SUBSCRIBE TOPICS -> ", "%d", sub);
 
-    bool pub = modem.mqtt_publish("teste/pub", "TESTE1", 0, 5000);
+    bool pub = modem.mqtt_publish("teste/pub", "OK", strlen("OK"), 0, 5000);
     ESP_LOGI("MQTT_PUBLISH -> ", "%d", pub);
 
     vTaskDelay(30000 / portTICK_PERIOD_MS);
@@ -138,7 +138,7 @@ start:
     sub = modem.mqtt_subscribe("teste/sub", 0, 5000);
     ESP_LOGI("MQTT_SUBSCRIBE -> ", "%d", sub);
 
-    pub = modem.mqtt_publish("teste/pub", "TESTE", 0, 5000);
+    pub = modem.mqtt_publish("teste/pub", "OK", strlen("OK"), 0, 5000);
     ESP_LOGI("MQTT_PUBLISH -> ", "%d", pub);
 
     vTaskDelay(60000 / portTICK_PERIOD_MS);

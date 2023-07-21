@@ -122,7 +122,7 @@ public:
     bool mqtt_connect(const char *host, uint16_t port, const char *clientId, bool clean_session = true, const char *username = nullptr, const char *password = nullptr, bool ssl = false, const char *ca_name = "ca.pem", uint16_t keepalive = 60, uint32_t timeout = 10000);
     bool mqtt_disconnect(uint32_t timeout = 1000);
     bool mqtt_release_client(uint32_t timeout = 1000);
-    bool mqtt_publish(const char *topic, const char *data, uint16_t qos = 0, uint32_t timeout = 1000);
+    bool mqtt_publish(const char *topic, const char *data, size_t len, uint16_t qos = 0, uint32_t timeout = 1000);
     bool mqtt_subscribe_topics(const char *topic[10], int n_topics = 10, uint16_t qos = 0, uint32_t timeout = 1000);
     bool mqtt_subscribe(const char *topic, uint16_t qos, uint32_t timeout = 1000);
     bool mqtt_is_connected();

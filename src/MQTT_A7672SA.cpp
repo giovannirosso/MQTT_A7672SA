@@ -61,6 +61,24 @@ A7672SA::~A7672SA()
     ESP_LOGI("DESTRUCTOR", "SIMCOMM Stopped");
 }
 
+bool A7672SA::begin()
+{
+    gpio_set_direction(this->en_pin, GPIO_MODE_OUTPUT); //++ Set GPIO Pin Directions
+
+    ESP_LOGI("BEGIN", "Enable Pin: %d", this->en_pin);
+
+    gpio_set_level(this->en_pin, 1); //++ Restarting Simcomm via ENABLE pin
+    vTaskDelay(2000 / portTICK_PERIOD_MS);
+    gpio_set_level(this->en_pin, 0);
+    vTaskDelay(5000 / portTICK_PERIOD_MS);
+
+    xTaskCreatePinnedToCore(this->rx_taskImpl, "uart_rx_task", 2048 * 3, this, configMAX_PRIORITIES - 5, NULL, 1); //++ Create FreeRtos Tasks
+    xTaskCreatePinnedToCore(this->tx_taskImpl, "uart_tx_task", 2048 * 2, this, configMAX_PRIORITIES - 6, NULL, 1);
+
+    ESP_LOGI("BEGIN", "SIMCOMM Started");
+    return true;
+}
+
 void A7672SA::rx_taskImpl(void *pvParameters)
 {
     static_cast<A7672SA *>(pvParameters)->rx_task();
@@ -108,7 +126,7 @@ void A7672SA::tx_task()
 
     while (1)
     {
-        vTaskDelay(100 / portTICK_PERIOD_MS);
+        vTaskDelay(300 / portTICK_PERIOD_MS);
     }
 }
 
@@ -166,35 +184,45 @@ void A7672SA::simcomm_response_parser(const char *data) //++ Parser to parse AT 
     }
     else if (strstr(data, "+CMQTTRECV:"))
     {
-        mqtt_message message;
-
         String payloadString(data);
 
-        int firstCommaIndex = payloadString.indexOf(',');
-        int secondCommaIndex = payloadString.indexOf(',', firstCommaIndex + 1);
-        int thirdCommaIndex = payloadString.indexOf(',', secondCommaIndex + 1);
+        int currentIndex = 0;
+        int mqttRecvIndex = payloadString.indexOf("+CMQTTRECV:", currentIndex);
 
-        String topic = payloadString.substring(firstCommaIndex + 2, secondCommaIndex - 1).c_str();
-        topic.trim();
-        message.topic = (char *)malloc(topic.length() + 1);
-        strcpy(message.topic, topic.c_str());
+        while (mqttRecvIndex != -1)
+        {
+            currentIndex = mqttRecvIndex;
 
-        String messageLenStr = payloadString.substring(secondCommaIndex + 1, thirdCommaIndex);
-        messageLenStr.trim();
-        message.length = messageLenStr.toInt();
+            int firstCommaIndex = payloadString.indexOf(',', currentIndex);
+            int secondCommaIndex = payloadString.indexOf(',', firstCommaIndex + 1);
+            int thirdCommaIndex = payloadString.indexOf(',', secondCommaIndex + 1);
 
-        String payload = payloadString.substring(thirdCommaIndex + 2, thirdCommaIndex + 2 + message.length);
-        payload.trim();
-        message.payload = new uint8_t[message.length];
-        memcpy(message.payload, payload.c_str(), message.length);
+            String topic = payloadString.substring(firstCommaIndex + 2, secondCommaIndex - 1).c_str();
+            topic.trim();
+            int messageLength = payloadString.substring(secondCommaIndex + 1, thirdCommaIndex).toInt();
 
-        if (this->on_message_callback_ != NULL)
-            this->on_message_callback_(message);
+            String payload = payloadString.substring(thirdCommaIndex + 2, thirdCommaIndex + 2 + messageLength);
 
-        free(message.topic);
-        delete[] message.payload;
+            mqtt_message message;
+            message.topic = (char *)malloc(topic.length() + 1);
+            strcpy(message.topic, topic.c_str());
+            message.length = messageLength;
+            message.payload = new uint8_t[messageLength];
+            memcpy(message.payload, payload.c_str(), messageLength);
+
+            if (this->on_message_callback_ != nullptr)
+            {
+                this->on_message_callback_(message);
+            }
+
+            free(message.topic);
+            delete[] message.payload;
+
+            // Move to the next potential "+CMQTTRECV:" message in the buffer
+            mqttRecvIndex = payloadString.indexOf("+CMQTTRECV:", currentIndex + 1);
+        }
     }
-    else if (strstr(data, GSM_NL "+CMQTTCONNLOST:"))
+    else if (strstr(data, GSM_NL "+CMQTTCONNLOST:") || strstr(data, GSM_NL "+CMQTTDISC:"))
     {
         ESP_LOGI("PARSER", "MQTT Disconnected");
 
@@ -204,24 +232,6 @@ void A7672SA::simcomm_response_parser(const char *data) //++ Parser to parse AT 
     {
         ESP_LOGI("PARSER", "Unhandeled AT Response %s", data);
     }
-}
-
-bool A7672SA::begin()
-{
-    gpio_set_direction(this->en_pin, GPIO_MODE_OUTPUT); //++ Set GPIO Pin Directions
-
-    ESP_LOGI("BEGIN", "Enable Pin: %d", this->en_pin);
-
-    gpio_set_level(this->en_pin, 1); //++ Restarting Simcomm via ENABLE pin
-    vTaskDelay(2000 / portTICK_PERIOD_MS);
-    gpio_set_level(this->en_pin, 0);
-    vTaskDelay(5000 / portTICK_PERIOD_MS);
-
-    xTaskCreate(this->rx_taskImpl, "uart_rx_task", 2048 * 2, this, configMAX_PRIORITIES, NULL); //++ Create FreeRtos Tasks
-    xTaskCreate(this->tx_taskImpl, "uart_tx_task", 2048 * 2, this, configMAX_PRIORITIES - 1, NULL);
-
-    ESP_LOGI("BEGIN", "SIMCOMM Started");
-    return true;
 }
 
 bool A7672SA::restart(uint32_t timeout)
@@ -235,6 +245,7 @@ int A7672SA::send_cmd_to_simcomm(const char *logName, const char *data) //++ Sen
     const int len = strlen(data);
     const int txBytes = uart_write_bytes(UART_NUM_1, data, len);
     ESP_LOGI(logName, "Wrote %d bytes", txBytes);
+    ESP_LOGI(logName, "Wrote %s", data);
     return txBytes;
 }
 
@@ -598,17 +609,37 @@ bool A7672SA::mqtt_disconnect(uint32_t timeout)
     return this->wait_response(timeout);
 }
 
-bool A7672SA::mqtt_publish(const char *topic, const char *data, uint16_t qos, uint32_t timeout)
+bool A7672SA::mqtt_publish(const char *topic, const char *data, size_t len, uint16_t qos, uint32_t timeout)
 {
-    const size_t data_size = strlen(topic) + strlen(data) + 50;
-    char data_string[data_size];
-    sprintf(data_string, "AT+CMQTTPUB=0,\"%s\",%d,%d" GSM_NL, topic, qos, strlen(data));
-    this->send_cmd_to_simcomm("MQTT_PUBLISH", data_string);
-    if (this->wait_input(timeout))
+    // A7672SA can't publish 0 bytes, so we send a 0 byte string instead =)
+    if (len == 0)
     {
-        int tx_bytes = uart_write_bytes(UART_NUM_1, data, strlen(data));
-        ESP_LOGI("MQTT_PUBLISH", "Wrote %d bytes", tx_bytes);
-        return this->wait_publish(timeout);
+        const char zero_data[2] = "0";
+        len = strlen(zero_data);
+
+        const size_t data_size = strlen(topic) + len + 50;
+        char data_string[data_size];
+        ESP_LOGI("MQTT_PUBLISH", "LEN =  %d bytes", len);
+        sprintf(data_string, "AT+CMQTTPUB=0,\"%s\",%d,%d" GSM_NL, topic, qos, len);
+        this->send_cmd_to_simcomm("MQTT_PUBLISH", data_string);
+        if (this->wait_input(timeout))
+        {
+            this->send_cmd_to_simcomm("MQTT_PUBLISH", zero_data);
+            return this->wait_publish(timeout);
+        }
+    }
+    else
+    {
+        const size_t data_size = strlen(topic) + len + 50;
+        char data_string[data_size];
+        ESP_LOGI("MQTT_PUBLISH", "LEN =  %d bytes", len);
+        sprintf(data_string, "AT+CMQTTPUB=0,\"%s\",%d,%d" GSM_NL, topic, qos, len);
+        this->send_cmd_to_simcomm("MQTT_PUBLISH", data_string);
+        if (this->wait_input(timeout))
+        {
+            this->send_cmd_to_simcomm("MQTT_PUBLISH", data);
+            return this->wait_publish(timeout);
+        }
     }
     return false;
 }
