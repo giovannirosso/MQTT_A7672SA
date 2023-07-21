@@ -97,13 +97,13 @@ start:
         vTaskDelay(2000 / portTICK_PERIOD_MS);
     } while (ip == "");
 
-    String time;
+    time_t time;
     do
     {
         time = modem.get_ntp_time(5000);
-        printf("TIME: %s\n", time.c_str());
+        printf("TIME: %ld\n", time);
         vTaskDelay(2000 / portTICK_PERIOD_MS);
-    } while (time == "");
+    } while (time == 0);
 
     connected = modem.mqtt_connect("test.mosquitto.org", 1883, "A7672SA");
     ESP_LOGI("MQTT_CONNECTED_NO_SSL -> ", "%d", connected);

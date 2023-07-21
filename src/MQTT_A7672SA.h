@@ -8,7 +8,10 @@
 #define MQTT_A7672SA_H_
 
 #include <stdio.h>
-#include "string.h"
+#include <stdlib.h>
+#include <string.h>
+#include <time.h>
+
 #include "esp_system.h"
 #include "esp_log.h"
 
@@ -113,7 +116,7 @@ public:
     bool set_apn(const char *apn, uint32_t timeout = 1000);
     bool set_ntp_server(const char *ntp_server, int time_zone, uint32_t timeout = 1000);
 
-    String get_ntp_time(uint32_t timeout = 1000);
+    time_t get_ntp_time(uint32_t timeout = 1000);
     String get_provider_name(uint32_t timeout = 1000);
     String get_imei(uint32_t timeout = 1000);
     String get_local_ip(uint32_t timeout = 1000);

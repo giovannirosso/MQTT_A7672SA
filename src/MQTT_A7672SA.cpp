@@ -404,7 +404,24 @@ bool A7672SA::set_ntp_server(const char *ntp_server, int time_zone, uint32_t tim
     return false;
 }
 
-String A7672SA::get_ntp_time(uint32_t timeout)
+time_t convertToTimestamp(const char *arry)
+{
+    struct tm timeStruct = {0};
+
+    sscanf(arry, "%d/%d/%d,%d:%d:%d", &timeStruct.tm_year, &timeStruct.tm_mon,
+           &timeStruct.tm_mday, &timeStruct.tm_hour, &timeStruct.tm_min, &timeStruct.tm_sec);
+
+    timeStruct.tm_year += 100; // Assuming 2000-2099
+    timeStruct.tm_mon -= 1;    // Months are 0-based
+
+    time_t timestamp = mktime(&timeStruct);
+
+    ESP_LOGI("CONVERT_TO_TIMESTAMP", "Timestamp: %ld", timestamp);
+
+    return timestamp;
+}
+
+time_t A7672SA::get_ntp_time(uint32_t timeout)
 {
     this->send_cmd_to_simcomm("GET_NTP_TIME", "AT+CCLK?" GSM_NL);
     if (wait_response(timeout))
@@ -425,18 +442,11 @@ String A7672SA::get_ntp_time(uint32_t timeout)
                     index_of_data++;
                 } while (this->at_response[index_of_data] != '+');
 
-                // todo aa/mm/dd,hh:mm:ss+tz convert to timestamp
-
-                for (int j = 0; j < strlen(sntp_time_string); j++)
-                {
-                    data_string += sntp_time_string[j];
-                }
-
-                return data_string;
+                return convertToTimestamp(sntp_time_string);
             }
         }
     }
-    return "";
+    return 0;
 }
 
 String A7672SA::get_provider_name(uint32_t timeout)
