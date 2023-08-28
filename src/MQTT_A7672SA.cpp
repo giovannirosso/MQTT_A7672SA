@@ -226,6 +226,13 @@ void A7672SA::simcomm_response_parser(const char *data) //++ Parser to parse AT 
     {
         ESP_LOGI("PARSER", "MQTT Disconnected");
 
+        mqtt_status status = A7672SA_MQTT_DISCONNECTED;
+
+        this->mqtt_connected = false;
+
+        if (this->on_mqtt_status_ != NULL)
+            this->on_mqtt_status_(status);
+
         this->mqtt_disconnect();
     }
     else
@@ -386,6 +393,10 @@ bool A7672SA::wait_network(uint32_t timeout)
         if (network_status.toInt() == REGISTERED_HOME || network_status.toInt() == REGISTERED_ROAMING)
         {
             return true;
+        }
+        else
+        {
+            return false;
         }
     }
     return false;
@@ -550,6 +561,8 @@ bool A7672SA::mqtt_connect(const char *host, uint16_t port, const char *clientId
                     if (this->wait_response(timeout))
                         this->send_cmd_to_simcomm("MQTT_CONNECT", "AT+CMQTTCFG=\"argtopic\",0,1,1" GSM_NL);
                     if (this->wait_response(timeout))
+                        this->send_cmd_to_simcomm("MQTT_CONNECT", "AT+CMQTTCFG=\"argtopic\",0,1,1" GSM_NL);
+                    if (this->wait_response(timeout))
                     {
                         const size_t data_size = strlen(host) + strlen(username) + strlen(password) + 50;
                         char data[data_size];
@@ -580,6 +593,8 @@ bool A7672SA::mqtt_connect(const char *host, uint16_t port, const char *clientId
             if (this->wait_response(timeout))
                 this->send_cmd_to_simcomm("MQTT_CONNECT", "AT+CMQTTCFG=\"argtopic\",0,1,1" GSM_NL);
             if (this->wait_response(timeout))
+                this->send_cmd_to_simcomm("MQTT_CONNECT", "AT+CMQTTCFG=\"argtopic\",0,1,1" GSM_NL);
+            if (this->wait_response(timeout))
             {
                 const size_t data_size = strlen(host) + strlen(username) + strlen(password) + 50;
                 char data[data_size];
@@ -605,13 +620,6 @@ bool A7672SA::mqtt_disconnect(uint32_t timeout)
     this->send_cmd_to_simcomm("MQTT_DISCONNECT", "AT+CMQTTDISC=0,120" GSM_NL);
     if (this->wait_response(timeout))
     {
-        mqtt_status status = A7672SA_MQTT_DISCONNECTED;
-
-        this->mqtt_connected = false;
-
-        if (this->on_mqtt_status_ != NULL)
-            this->on_mqtt_status_(status);
-
         this->send_cmd_to_simcomm("MQTT_DISCONNECT", "AT+CMQTTREL=0" GSM_NL);
     }
     this->wait_response(timeout);
