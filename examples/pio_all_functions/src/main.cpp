@@ -151,9 +151,7 @@ start:
     dis = modem.mqtt_disconnect(5000);
     ESP_LOGI("MQTT_DISCONNECT -> ", "%d", dis);
 
-    printf("RESTARTING...\n");
-    modem.restart();
-    goto start;
+    ESP_LOGI("SETUP", "END");
 }
 
 void loop()
