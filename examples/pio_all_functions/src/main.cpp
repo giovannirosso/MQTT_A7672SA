@@ -3,7 +3,9 @@
 
 A7672SA modem(GPIO_NUM_17, GPIO_NUM_16, GPIO_NUM_27);
 
-#define APN "inlog.claro.com.br"
+#define APN "virtueyes.com.br"
+// #define APN "inlog.claro.com.br"
+// #define APN "nbiot.gsim"
 
 bool connected = false;
 bool reset = false;
@@ -52,7 +54,7 @@ start:
         signal = modem.signal_quality(5000);
         ESP_LOGI("SIGNAL", "%d", signal);
         vTaskDelay(2000 / portTICK_PERIOD_MS);
-    } while (signal == 99 && millis() - start < 10000);
+    } while (signal == 99 && millis() - start < 2 * 60000);
     if (signal == 99)
     {
         modem.restart();
@@ -93,7 +95,7 @@ start:
     do
     {
         ip = modem.get_local_ip(5000);
-        printf("IP: %s\n", ip);
+        printf("IP: %s\n", ip.c_str());
         vTaskDelay(2000 / portTICK_PERIOD_MS);
     } while (ip == "");
 
@@ -105,6 +107,10 @@ start:
         vTaskDelay(2000 / portTICK_PERIOD_MS);
     } while (time == 0);
 
+    bool sub = false;
+    bool pub = false;
+    bool dis = false;
+
     connected = modem.mqtt_connect("test.mosquitto.org", 1883, "A7672SA");
     ESP_LOGI("MQTT_CONNECTED_NO_SSL -> ", "%d", connected);
     if (!connected)
@@ -112,17 +118,16 @@ start:
         goto start;
     }
 
-    bool sub = false;
     const char *topics[10] = {"teste/sub0", "teste/sub1", "teste/sub2", "teste/sub3", "teste/sub4", "teste/sub5", "teste/sub6", "teste/sub7", "teste/sub8", "teste/sub9"};
     sub = modem.mqtt_subscribe_topics(topics, 10, 0, 5000);
     ESP_LOGI("MQTT_SUBSCRIBE TOPICS -> ", "%d", sub);
 
-    bool pub = modem.mqtt_publish("teste/pub", "OK", strlen("OK"), 0, 5000);
+    modem.mqtt_publish("teste/pub", "OK", strlen("OK"), 0, 5000);
     ESP_LOGI("MQTT_PUBLISH -> ", "%d", pub);
 
     vTaskDelay(30000 / portTICK_PERIOD_MS);
 
-    bool dis = modem.mqtt_disconnect(5000);
+    dis = modem.mqtt_disconnect(5000);
     ESP_LOGI("MQTT_DISCONNECT -> ", "%d", dis);
 
     bool cert = modem.set_ca_cert(ca_cert, "ca.pem", sizeof(ca_cert), 5000);

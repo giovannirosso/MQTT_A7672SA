@@ -460,6 +460,13 @@ time_t A7672SA::get_ntp_time(uint32_t timeout)
     return 0;
 }
 
+/*
+AT+CSPN anwser:
+>
+> +CSPN: "TIM",1
+>
+> OK
+*/
 String A7672SA::get_provider_name(uint32_t timeout)
 {
     this->send_cmd_to_simcomm("GET_PROVIDER_NAME", "AT+CSPN?" GSM_NL);
@@ -473,13 +480,24 @@ String A7672SA::get_provider_name(uint32_t timeout)
             data_string += this->at_response[j];
         }
 
+        data_string.trim();
+
         provider_name = data_string.substring(data_string.indexOf("\"") + 1, data_string.indexOf("\"", data_string.indexOf("\"") + 1));
+
+        ESP_LOGI("GET_PROVIDER_NAME", "PROVIDER_NAME: %s", provider_name.c_str());
 
         return provider_name;
     }
     return "";
 }
 
+/*
+AT+CGSN anwser:
+>
+> 860710050359929
+>
+> OK
+*/
 String A7672SA::get_imei(uint32_t timeout)
 {
     this->send_cmd_to_simcomm("GET_IMEI", "AT+CGSN" GSM_NL);
@@ -496,11 +514,20 @@ String A7672SA::get_imei(uint32_t timeout)
 
         imei = data_string.substring(0, data_string.indexOf("\n") - 1);
 
+        ESP_LOGI("GET_IMEI", "IMEI: %s", imei.c_str());
+
         return imei;
     }
     return "";
 }
 
+/*
+AT+CGPADDR anwser:
+>
+> +CGPADDR: 1,10.240.199.101
+>
+> OK
+*/
 String A7672SA::get_local_ip(uint32_t timeout)
 {
     this->send_cmd_to_simcomm("GET_LOCAL_IP", "AT+CGPADDR" GSM_NL);
@@ -514,7 +541,11 @@ String A7672SA::get_local_ip(uint32_t timeout)
             data_string += this->at_response[j];
         }
 
-        local_ip = data_string.substring(data_string.indexOf(",") + 1, data_string.indexOf(GSM_OK) - 2);
+        data_string.trim();
+
+        local_ip = data_string.substring(data_string.indexOf(",") + 1, data_string.indexOf("\n") - 1);
+
+        ESP_LOGI("GET_LOCAL_IP", "LOCAL_IP: %s", local_ip.c_str());
 
         return local_ip;
     }
@@ -566,7 +597,7 @@ bool A7672SA::mqtt_connect(const char *host, uint16_t port, const char *clientId
                     {
                         const size_t data_size = strlen(host) + strlen(username) + strlen(password) + 50;
                         char data[data_size];
-                        if (username == nullptr)
+                        if (username == "")
                         {
                             sprintf(data, "AT+CMQTTCONNECT=0,\"tcp://%s:%d\",%d,%d" GSM_NL, host, port, keepalive, clean_session);
                         }
@@ -598,7 +629,7 @@ bool A7672SA::mqtt_connect(const char *host, uint16_t port, const char *clientId
             {
                 const size_t data_size = strlen(host) + strlen(username) + strlen(password) + 50;
                 char data[data_size];
-                if (username == nullptr)
+                if (username == "")
                 {
                     sprintf(data, "AT+CMQTTCONNECT=0,\"tcp://%s:%d\",%d,%d" GSM_NL, host, port, keepalive, clean_session);
                 }
