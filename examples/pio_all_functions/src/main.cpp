@@ -20,11 +20,16 @@ void mqttStatusCallback(mqtt_status &status)
 void mqttCallback(mqtt_message &message)
 {
     printf("CALLBACK TOPIC: %s\n", message.topic);
-    printf("CALLBACK DATA: %s\n", message.payload);
+    // print message.payload uint8_t array
+    printf("CALLBACK PAYLOAD: ");
+    for (int i = 0; i < message.length; i++)
+    {
+        printf("%c", message.payload[i]);
+    }
+    printf("\n");
 
     if (strcmp(message.topic, "teste/sub") == 0)
     {
-        ESP_LOGI("MQTT_RECEVEID -> ", "%s", message.payload);
         modem.mqtt_publish("teste/pub", "OK", strlen("OK"), 0, 5000);
     }
 }

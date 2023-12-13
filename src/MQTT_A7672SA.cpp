@@ -592,8 +592,6 @@ bool A7672SA::mqtt_connect(const char *host, uint16_t port, const char *clientId
                     if (this->wait_response(timeout))
                         this->send_cmd_to_simcomm("MQTT_CONNECT", "AT+CMQTTCFG=\"argtopic\",0,1,1" GSM_NL);
                     if (this->wait_response(timeout))
-                        this->send_cmd_to_simcomm("MQTT_CONNECT", "AT+CMQTTCFG=\"argtopic\",0,1,1" GSM_NL);
-                    if (this->wait_response(timeout))
                     {
                         const size_t data_size = strlen(host) + strlen(username) + strlen(password) + 50;
                         char data[data_size];
@@ -621,8 +619,6 @@ bool A7672SA::mqtt_connect(const char *host, uint16_t port, const char *clientId
             char cmd[100];
             sprintf(cmd, "AT+CMQTTACCQ=0,\"%s\"" GSM_NL, clientId);
             this->send_cmd_to_simcomm("MQTT_CONNECT", cmd);
-            if (this->wait_response(timeout))
-                this->send_cmd_to_simcomm("MQTT_CONNECT", "AT+CMQTTCFG=\"argtopic\",0,1,1" GSM_NL);
             if (this->wait_response(timeout))
                 this->send_cmd_to_simcomm("MQTT_CONNECT", "AT+CMQTTCFG=\"argtopic\",0,1,1" GSM_NL);
             if (this->wait_response(timeout))
