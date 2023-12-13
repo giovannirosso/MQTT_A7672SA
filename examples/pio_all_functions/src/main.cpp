@@ -133,7 +133,7 @@ start:
     bool cert = modem.set_ca_cert(ca_cert, "ca.pem", sizeof(ca_cert), 5000);
     ESP_LOGI("CERT", "%d", cert);
 
-    modem.mqtt_connect("test.mosquitto.org", 8883, "A7672SA", true, nullptr, nullptr, true, "ca.pem");
+    modem.mqtt_connect("test.mosquitto.org", 8883, "A7672SA", true, "", "", true, "ca.pem");
     ESP_LOGI("MQTT_CONNECTED_SSL -> ", "%d", connected);
     if (!connected)
     {
