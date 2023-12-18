@@ -7,6 +7,8 @@ A7672SA modem(GPIO_NUM_17, GPIO_NUM_16, GPIO_NUM_27);
 // #define APN "inlog.claro.com.br"
 // #define APN "nbiot.gsim"
 
+#define SSL
+
 bool connected = false;
 bool reset = false;
 
@@ -116,45 +118,43 @@ start:
     bool pub = false;
     bool dis = false;
 
+#ifndef SSL
     connected = modem.mqtt_connect("test.mosquitto.org", 1883, "A7672SA");
     ESP_LOGI("MQTT_CONNECTED_NO_SSL -> ", "%d", connected);
-    if (!connected)
+    if (connected)
     {
-        goto start;
+        const char *topics[10] = {"teste/sub", "teste/sub1", "teste/sub2", "teste/sub3", "teste/sub4", "teste/sub5", "teste/sub6", "teste/sub7", "teste/sub8", "teste/sub9"};
+        sub = modem.mqtt_subscribe_topics(topics, 10, 0, 5000);
+        ESP_LOGI("MQTT_SUBSCRIBE TOPICS -> ", "%d", sub);
+
+        modem.mqtt_publish("teste/pub", "OK", strlen("OK"), 0, 5000);
+        ESP_LOGI("MQTT_PUBLISH -> ", "%d", pub);
+
+        vTaskDelay(30000 / portTICK_PERIOD_MS);
+
+        dis = modem.mqtt_disconnect(5000);
+        ESP_LOGI("MQTT_DISCONNECT -> ", "%d", dis);
     }
-
-    const char *topics[10] = {"teste/sub0", "teste/sub1", "teste/sub2", "teste/sub3", "teste/sub4", "teste/sub5", "teste/sub6", "teste/sub7", "teste/sub8", "teste/sub9"};
-    sub = modem.mqtt_subscribe_topics(topics, 10, 0, 5000);
-    ESP_LOGI("MQTT_SUBSCRIBE TOPICS -> ", "%d", sub);
-
-    modem.mqtt_publish("teste/pub", "OK", strlen("OK"), 0, 5000);
-    ESP_LOGI("MQTT_PUBLISH -> ", "%d", pub);
-
-    vTaskDelay(30000 / portTICK_PERIOD_MS);
-
-    dis = modem.mqtt_disconnect(5000);
-    ESP_LOGI("MQTT_DISCONNECT -> ", "%d", dis);
-
+#else
     bool cert = modem.set_ca_cert(ca_cert, "ca.pem", sizeof(ca_cert), 5000);
     ESP_LOGI("CERT", "%d", cert);
 
     modem.mqtt_connect("test.mosquitto.org", 8883, "A7672SA", true, "", "", true, "ca.pem");
     ESP_LOGI("MQTT_CONNECTED_SSL -> ", "%d", connected);
-    if (!connected)
+    if (connected)
     {
-        goto start;
+        sub = modem.mqtt_subscribe("teste/sub", 0, 5000);
+        ESP_LOGI("MQTT_SUBSCRIBE -> ", "%d", sub);
+
+        pub = modem.mqtt_publish("teste/pub", "OK", strlen("OK"), 0, 5000);
+        ESP_LOGI("MQTT_PUBLISH -> ", "%d", pub);
+
+        vTaskDelay(60000 / portTICK_PERIOD_MS);
+
+        dis = modem.mqtt_disconnect(5000);
+        ESP_LOGI("MQTT_DISCONNECT -> ", "%d", dis);
     }
-
-    sub = modem.mqtt_subscribe("teste/sub", 0, 5000);
-    ESP_LOGI("MQTT_SUBSCRIBE -> ", "%d", sub);
-
-    pub = modem.mqtt_publish("teste/pub", "OK", strlen("OK"), 0, 5000);
-    ESP_LOGI("MQTT_PUBLISH -> ", "%d", pub);
-
-    vTaskDelay(60000 / portTICK_PERIOD_MS);
-
-    dis = modem.mqtt_disconnect(5000);
-    ESP_LOGI("MQTT_DISCONNECT -> ", "%d", dis);
+#endif
 
     ESP_LOGI("SETUP", "END");
 }
