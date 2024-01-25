@@ -490,7 +490,7 @@ String A7672SA::get_provider_name(uint32_t timeout)
 
         return provider_name;
     }
-    return "";
+    return "NO SIM";
 }
 
 /*
