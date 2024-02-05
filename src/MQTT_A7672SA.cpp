@@ -518,9 +518,11 @@ String A7672SA::get_imei(uint32_t timeout)
 
         ESP_LOGI("GET_IMEI", "IMEI: %s", imei.c_str());
 
-        return imei;
+        // validate IMEI
+        if (imei.length() == 15)
+            return imei;
     }
-    return "";
+    return "0";
 }
 
 /*
@@ -530,13 +532,13 @@ AT+CGPADDR anwser:
 >
 > OK
 */
-String A7672SA::get_local_ip(uint32_t timeout)
+IPAddress A7672SA::get_local_ip(uint32_t timeout)
 {
     this->send_cmd_to_simcomm("GET_LOCAL_IP", "AT+CGPADDR" GSM_NL);
     if (this->wait_response(timeout))
     {
         String data_string = "";
-        String local_ip = "";
+        String local_ip_str = "";
 
         for (int j = 0; j < strlen(this->at_response); j++)
         {
@@ -545,13 +547,24 @@ String A7672SA::get_local_ip(uint32_t timeout)
 
         data_string.trim();
 
-        local_ip = data_string.substring(data_string.indexOf(",") + 1, data_string.indexOf("\n") - 1);
+        local_ip_str = data_string.substring(data_string.indexOf(",") + 1, data_string.indexOf("\n") - 1);
 
-        ESP_LOGI("GET_LOCAL_IP", "LOCAL_IP: %s", local_ip.c_str());
+        ESP_LOGI("GET_LOCAL_IP", "LOCAL_IP: %s", local_ip_str.c_str());
+
+        // get the four octets of the IP address
+        int octet1 = local_ip_str.substring(0, local_ip_str.indexOf(".")).toInt();
+        local_ip_str.remove(0, local_ip_str.indexOf(".") + 1);
+        int octet2 = local_ip_str.substring(0, local_ip_str.indexOf(".")).toInt();
+        local_ip_str.remove(0, local_ip_str.indexOf(".") + 1);
+        int octet3 = local_ip_str.substring(0, local_ip_str.indexOf(".")).toInt();
+        local_ip_str.remove(0, local_ip_str.indexOf(".") + 1);
+        int octet4 = local_ip_str.toInt();
+
+        IPAddress local_ip(octet1, octet2, octet3, octet4);
 
         return local_ip;
     }
-    return "";
+    return IPAddress(0, 0, 0, 0);
 }
 
 bool A7672SA::set_ca_cert(const char *ca_cert, const char *ca_name, size_t cert_size, uint32_t timeout)
