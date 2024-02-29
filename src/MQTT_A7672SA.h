@@ -121,6 +121,7 @@ public:
     time_t get_ntp_time(uint32_t timeout = 1000);
     String get_provider_name(uint32_t timeout = 1000);
     String get_imei(uint32_t timeout = 1000);
+    String get_iccid(uint32_t timeout = 1000);
     IPAddress get_local_ip(uint32_t timeout = 1000);
 
     bool set_ca_cert(const char *ca_cert, const char *ca_name, size_t cert_size, uint32_t timeout = 10000);

@@ -526,6 +526,33 @@ String A7672SA::get_imei(uint32_t timeout)
 }
 
 /*
+AT+CICCID
++ICCID: 89860318760238610932
+*/
+String A7672SA::get_iccid(uint32_t timeout)
+{
+    this->send_cmd_to_simcomm("GET_ICCID", "AT+CICCID" GSM_NL);
+    if (this->wait_response(timeout))
+    {
+        String data_string = "";
+        String iccid = "";
+        for (int j = 0; j < strlen(this->at_response); j++)
+        {
+            data_string += this->at_response[j];
+        }
+
+        data_string.trim();
+
+        iccid = data_string.substring(data_string.indexOf(":") + 1, data_string.indexOf("\n") - 1);
+
+        ESP_LOGI("GET_ICCID", "ICCID: %s", iccid.c_str());
+
+        return iccid;
+    }
+    return "0";
+}
+
+/*
 AT+CGPADDR anwser:
 >
 > +CGPADDR: 1,10.240.199.101
