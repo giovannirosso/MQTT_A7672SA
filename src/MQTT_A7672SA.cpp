@@ -124,6 +124,12 @@ void A7672SA::tx_task()
     send_cmd_to_simcomm("AT_ATE0", "ATE0" GSM_NL);
     vTaskDelay(500 / portTICK_PERIOD_MS);
 
+    send_cmd_to_simcomm("AT_ATV1", "ATV1" GSM_NL); // todo
+    vTaskDelay(500 / portTICK_PERIOD_MS);
+
+    send_cmd_to_simcomm("AT+CMEE", "AT+CMEE=1" GSM_NL); // todo
+    vTaskDelay(500 / portTICK_PERIOD_MS);
+
     while (1)
     {
         vTaskDelay(300 / portTICK_PERIOD_MS);
@@ -247,12 +253,19 @@ bool A7672SA::restart(uint32_t timeout)
     return this->wait_response(timeout);
 }
 
+int A7672SA::send_cmd_to_simcomm(const char *logName, byte *data, int len) //++ Sending AT Commands to Simcomm via UART
+{
+    const int txBytes = uart_write_bytes(UART_NUM_1, data, len);
+    ESP_LOGI(logName, "Wrote %d bytes of %d requested", txBytes, len);
+    return txBytes;
+}
+
 int A7672SA::send_cmd_to_simcomm(const char *logName, const char *data) //++ Sending AT Commands to Simcomm via UART
 {
     const int len = strlen(data);
     const int txBytes = uart_write_bytes(UART_NUM_1, data, len);
+    // ESP_LOGI(logName, "Received %d bytes", len);
     ESP_LOGI(logName, "Wrote %d bytes", txBytes);
-    ESP_LOGI(logName, "Wrote %s", data);
     return txBytes;
 }
 
@@ -632,6 +645,8 @@ bool A7672SA::mqtt_connect(const char *host, uint16_t port, const char *clientId
                 {
                     this->send_cmd_to_simcomm("MQTT_CONNECT", "AT+CMQTTSSLCFG=0,0" GSM_NL);
                     if (this->wait_response(timeout))
+                        this->send_cmd_to_simcomm("MQTT_CONNECT", "AT+CMQTTCFG=\"checkUTF8\",0,0" GSM_NL);
+                    if (this->wait_response(timeout))
                         this->send_cmd_to_simcomm("MQTT_CONNECT", "AT+CMQTTCFG=\"argtopic\",0,1,1" GSM_NL);
                     if (this->wait_response(timeout))
                         this->send_cmd_to_simcomm("MQTT_CONNECT", "AT+CMQTTCFG=\"argtopic\",0,1,1" GSM_NL);
@@ -700,7 +715,7 @@ bool A7672SA::mqtt_disconnect(uint32_t timeout)
     return this->wait_response(timeout);
 }
 
-bool A7672SA::mqtt_publish(const char *topic, const char *data, size_t len, uint16_t qos, uint32_t timeout)
+bool A7672SA::mqtt_publish(const char *topic, byte *data, size_t len, uint16_t qos, uint32_t timeout)
 {
     // A7672SA can't publish 0 bytes, so we send a 0 byte string instead =)
     if (len == 0)
@@ -715,7 +730,7 @@ bool A7672SA::mqtt_publish(const char *topic, const char *data, size_t len, uint
         this->send_cmd_to_simcomm("MQTT_PUBLISH", data_string);
         if (this->wait_input(timeout))
         {
-            this->send_cmd_to_simcomm("MQTT_PUBLISH", zero_data);
+            this->send_cmd_to_simcomm("MQTT_PUBLISH_SEND", zero_data);
             return this->wait_publish(timeout);
         }
     }
@@ -728,7 +743,7 @@ bool A7672SA::mqtt_publish(const char *topic, const char *data, size_t len, uint
         this->send_cmd_to_simcomm("MQTT_PUBLISH", data_string);
         if (this->wait_input(timeout))
         {
-            this->send_cmd_to_simcomm("MQTT_PUBLISH", data);
+            this->send_cmd_to_simcomm("MQTT_PUBLISH_SEND", data, len);
             return this->wait_publish(timeout);
         }
     }
