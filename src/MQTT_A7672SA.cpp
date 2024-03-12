@@ -717,11 +717,10 @@ bool A7672SA::mqtt_disconnect(uint32_t timeout)
 
 bool A7672SA::mqtt_publish(const char *topic, byte *data, size_t len, uint16_t qos, uint32_t timeout)
 {
-    // A7672SA can't publish 0 bytes, so we send a 0 byte string instead =)
     if (len == 0)
     {
-        const char zero_data[2] = "0";
-        len = strlen(zero_data);
+        byte zero_data[2] = {0x08, 0x00};
+        len = sizeof(zero_data);
 
         const size_t data_size = strlen(topic) + len + 50;
         char data_string[data_size];
@@ -730,7 +729,7 @@ bool A7672SA::mqtt_publish(const char *topic, byte *data, size_t len, uint16_t q
         this->send_cmd_to_simcomm("MQTT_PUBLISH", data_string);
         if (this->wait_input(timeout))
         {
-            this->send_cmd_to_simcomm("MQTT_PUBLISH_SEND", zero_data);
+            this->send_cmd_to_simcomm("MQTT_PUBLISH_SEND", zero_data, len);
             return this->wait_publish(timeout);
         }
     }
