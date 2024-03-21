@@ -124,11 +124,11 @@ void A7672SA::tx_task()
     send_cmd_to_simcomm("AT_ATE0", "ATE0" GSM_NL);
     vTaskDelay(500 / portTICK_PERIOD_MS);
 
-    send_cmd_to_simcomm("AT_ATV1", "ATV1" GSM_NL); // todo
-    vTaskDelay(500 / portTICK_PERIOD_MS);
+    // send_cmd_to_simcomm("AT_ATV1", "ATV1" GSM_NL); // error roport
+    // vTaskDelay(500 / portTICK_PERIOD_MS);
 
-    send_cmd_to_simcomm("AT+CMEE", "AT+CMEE=1" GSM_NL); // todo
-    vTaskDelay(500 / portTICK_PERIOD_MS);
+    // send_cmd_to_simcomm("AT+CMEE", "AT+CMEE=1" GSM_NL); // cme error report
+    // vTaskDelay(500 / portTICK_PERIOD_MS);
 
     while (1)
     {
