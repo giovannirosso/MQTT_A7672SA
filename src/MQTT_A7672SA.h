@@ -62,6 +62,8 @@ enum mqtt_status // todo:
 class A7672SA
 {
 private:
+    SemaphoreHandle_t publish_semaphore;
+
     gpio_num_t tx_pin;
     gpio_num_t rx_pin;
     gpio_num_t en_pin;
@@ -104,7 +106,7 @@ public:
     int send_cmd_to_simcomm(const char *logName, byte *data, int len);
 
     bool wait_input(uint32_t timeout = 1000);
-    bool wait_publish(uint32_t timeout = 10000);
+    bool wait_publish(uint32_t timeout = 1000);
     bool wait_network(uint32_t timeout = 10000);
     bool wait_response(uint32_t timeout = 1000);
     bool wait_to_connect(uint32_t timeout = 10000);
