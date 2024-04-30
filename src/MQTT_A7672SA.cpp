@@ -99,7 +99,15 @@ void A7672SA::rx_task() //++ UART Receive Task
         {
             this->at_response[rxBytes] = 0;
             ESP_LOGI(RX_TASK_TAG, "Read %d bytes: '%s'", rxBytes, this->at_response);
-            this->simcomm_response_parser(this->at_response); //++ Call the AT Response Parser Function
+            int n_messages = 0;
+            char **messages = this->simcom_split_messages(this->at_response, &n_messages);
+            for (int i = 0; i < n_messages; i++)
+            {
+                ESP_LOGI(RX_TASK_TAG, "Message %d: '%s'", i, messages[i]);
+                this->simcomm_response_parser(messages[i]);
+                free(messages[i]);
+            }
+            free(messages);
         }
     }
     free(this->at_response);
@@ -134,13 +142,37 @@ void A7672SA::tx_task()
 
     while (1)
     {
-        vTaskDelay(1000 / portTICK_PERIOD_MS); //todo era 250
+        vTaskDelay(250 / portTICK_PERIOD_MS); // todo era 250
     }
+}
+
+char **A7672SA::simcom_split_messages(const char *data, int *n_messages)
+{
+    char **messages = NULL;
+    *n_messages = 0;
+
+    char *data_copy = strdup(data);
+    char *token = strtok(data_copy, GSM_NM);
+    while (token != NULL)
+    {
+        if (token[0] == '\0')
+        { // Ignora tokens vazios
+            token = strtok(NULL, GSM_NM);
+            continue;
+        }
+
+        messages = (char **)realloc(messages, (*n_messages + 1) * sizeof(char *));
+        messages[*n_messages] = strdup(token);
+        (*n_messages)++;
+        token = strtok(NULL, GSM_NM);
+    }
+    free(data_copy);
+    return messages;
 }
 
 void A7672SA::simcomm_response_parser(const char *data) //++ Parser to parse AT Responses from Simcomm
 {
-    if (strstr(data, "+CMQTTCONNECT: 0,0" GSM_NL))
+    if (strstr(data, "CMQTTCONNECT: 0,0" GSM_NL))
     {
         ESP_LOGI("PARSER", "MQTT Connected");
         this->mqtt_connected = true;
@@ -151,7 +183,7 @@ void A7672SA::simcomm_response_parser(const char *data) //++ Parser to parse AT 
         if (this->on_mqtt_status_ != NULL)
             this->on_mqtt_status_(status);
     }
-    else if (strstr(data, "+CMQTTSTART: 19" GSM_NL))
+    else if (strstr(data, "CMQTTSTART: 19" GSM_NL))
     {
         ESP_LOGI("PARSER", "fail to start");
         this->at_ok = false;
@@ -164,13 +196,13 @@ void A7672SA::simcomm_response_parser(const char *data) //++ Parser to parse AT 
 
         this->mqtt_release_client();
     }
-    else if (strstr(data, "+CFUN: 1" GSM_NL)) // ++ AT Response for *ATREADY: 1
+    else if (strstr(data, "CFUN: 1" GSM_NL)) // ++ AT Response for *ATREADY: 1
     {
-        ESP_LOGI("PARSER", "+CFUN: 1");
+        ESP_LOGI("PARSER", "CFUN: 1");
         this->at_ready = true;
         xSemaphoreGive(publish_semaphore);
     }
-    else if (strstr(data, "+CMQTTPUB: 0,0" GSM_NL))
+    else if (strstr(data, "CMQTTPUB: 0,0" GSM_NL))
     {
         ESP_LOGI("PARSER", "Publish OK");
         this->at_publish = true;
@@ -196,12 +228,12 @@ void A7672SA::simcomm_response_parser(const char *data) //++ Parser to parse AT 
         this->at_publish = false;
         xSemaphoreGive(publish_semaphore);
     }
-    else if (strstr(data, "+CMQTTRECV:"))
+    else if (strstr(data, "CMQTTRECV:"))
     {
         String payloadString(data);
 
         int currentIndex = 0;
-        int mqttRecvIndex = payloadString.indexOf("+CMQTTRECV:", currentIndex);
+        int mqttRecvIndex = payloadString.indexOf("CMQTTRECV:", currentIndex);
 
         while (mqttRecvIndex != -1)
         {
@@ -233,10 +265,10 @@ void A7672SA::simcomm_response_parser(const char *data) //++ Parser to parse AT 
             delete[] message.payload;
 
             // Move to the next potential "+CMQTTRECV:" message in the buffer
-            mqttRecvIndex = payloadString.indexOf("+CMQTTRECV:", currentIndex + 1);
+            mqttRecvIndex = payloadString.indexOf("CMQTTRECV:", currentIndex + 1);
         }
     }
-    else if (strstr(data, GSM_NL "+CMQTTCONNLOST:") || strstr(data, GSM_NL "+CMQTTDISC:"))
+    else if (strstr(data, GSM_NL "CMQTTCONNLOST:") || strstr(data, GSM_NL "CMQTTDISC:"))
     {
         ESP_LOGI("PARSER", "MQTT Disconnected");
 
@@ -747,7 +779,8 @@ bool A7672SA::mqtt_publish(const char *topic, byte *data, size_t len, uint16_t q
         if (this->wait_input(timeout))
         {
             this->send_cmd_to_simcomm("MQTT_PUBLISH_ZERO", zero_data, len);
-            return this->wait_publish(timeout);
+            if (this->wait_publish(timeout))
+                return true;
         }
     }
     else
@@ -760,7 +793,8 @@ bool A7672SA::mqtt_publish(const char *topic, byte *data, size_t len, uint16_t q
         if (this->wait_input(timeout))
         {
             this->send_cmd_to_simcomm("MQTT_PUBLISH_DATA", data, len);
-            return this->wait_publish(timeout);
+            if (this->wait_publish(timeout))
+                return true;
         }
     }
     return false;
