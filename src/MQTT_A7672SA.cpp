@@ -172,7 +172,11 @@ char **A7672SA::simcom_split_messages(const char *data, int *n_messages)
 
 void A7672SA::simcomm_response_parser(const char *data) //++ Parser to parse AT Responses from Simcomm
 {
-    if (strstr(data, "CMQTTCONNECT: 0,0" GSM_NL))
+    if (strcmp(data, GSM_NL) == 0)
+    {
+        return;
+    }
+    else if (strstr(data, "CMQTTCONNECT: 0,0" GSM_NL))
     {
         ESP_LOGI("PARSER", "MQTT Connected");
         this->mqtt_connected = true;
@@ -268,7 +272,7 @@ void A7672SA::simcomm_response_parser(const char *data) //++ Parser to parse AT 
             mqttRecvIndex = payloadString.indexOf("CMQTTRECV:", currentIndex + 1);
         }
     }
-    else if (strstr(data, GSM_NL "CMQTTCONNLOST:") || strstr(data, GSM_NL "CMQTTDISC:"))
+    else if (strstr(data, "CMQTTCONNLOST:") || strstr(data, "CMQTTDISC:"))
     {
         ESP_LOGI("PARSER", "MQTT Disconnected");
 
