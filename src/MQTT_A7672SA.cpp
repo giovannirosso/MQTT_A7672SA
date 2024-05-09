@@ -74,11 +74,37 @@ bool A7672SA::begin()
 
     publish_semaphore = xSemaphoreCreateBinary(); //++ Create FreeRtos Semaphore
 
+    uartQueue = xQueueCreate(UART_QUEUE_SIZE, sizeof(commandMessage));
+
     xTaskCreatePinnedToCore(this->rx_taskImpl, "uart_rx_task", 2048 * 3, this, configMAX_PRIORITIES - 5, NULL, 1); //++ Create FreeRtos Tasks
     xTaskCreatePinnedToCore(this->tx_taskImpl, "uart_tx_task", 2048 * 2, this, configMAX_PRIORITIES - 6, NULL, 1);
 
     ESP_LOGI("BEGIN", "SIMCOMM Started");
     return true;
+}
+
+void A7672SA::sendCommand(const char *logName, const char *data)
+{
+    ESP_LOGI(logName, "Sending Command: %s", data);
+    commandMessage message;
+    strcpy(message.logName, logName);
+    strcpy(message.data, data);
+    xQueueSend(uartQueue, &message, portMAX_DELAY);
+    // sendCommand(message);
+}
+
+void A7672SA::sendCommand(commandMessage message)
+{
+}
+
+bool A7672SA::receiveCommand(commandMessage *message)
+{
+    if (uxQueueMessagesWaiting(uartQueue) > 0)
+    {
+        xQueueReceive(uartQueue, message, 0);
+        return true;
+    }
+    return false;
 }
 
 void A7672SA::rx_taskImpl(void *pvParameters)
@@ -142,7 +168,14 @@ void A7672SA::tx_task()
 
     while (1)
     {
-        vTaskDelay(250 / portTICK_PERIOD_MS); // todo era 250
+        commandMessage receivedCommand;
+        if (receiveCommand(&receivedCommand))
+        {
+            Serial.println(receivedCommand.data);
+            send_cmd_to_simcomm(receivedCommand.logName, receivedCommand.data);
+        }
+
+        vTaskDelay(5 / portTICK_PERIOD_MS); // todo era 250
     }
 }
 
@@ -210,6 +243,11 @@ void A7672SA::simcomm_response_parser(const char *data) //++ Parser to parse AT 
     {
         ESP_LOGI("PARSER", "Publish OK");
         this->at_publish = true;
+        xSemaphoreGive(publish_semaphore);
+    }
+    else if (strstr(data, "CMQTTSUB: 0,0" GSM_NL))
+    {
+        ESP_LOGI("PARSER", "Subscribe OK");
         xSemaphoreGive(publish_semaphore);
     }
     else if (strstr(data, GSM_OK)) //++ AT Response for OK
@@ -299,7 +337,7 @@ void A7672SA::simcomm_response_parser(const char *data) //++ Parser to parse AT 
 
 bool A7672SA::restart(uint32_t timeout)
 {
-    this->send_cmd_to_simcomm("RESTART", "AT+CRESET" GSM_NL);
+    this->sendCommand("RESTART", "AT+CRESET" GSM_NL);
     return this->wait_response(timeout);
 }
 
@@ -393,19 +431,19 @@ bool A7672SA::wait_to_connect(uint32_t timeout)
 
 bool A7672SA::test_at(uint32_t timeout)
 {
-    this->send_cmd_to_simcomm("AT_TEST", "AT" GSM_NL);
+    this->sendCommand("AT_TEST", "AT" GSM_NL);
     return this->wait_response(timeout);
 }
 
 bool A7672SA::sim_ready(uint32_t timeout)
 {
-    this->send_cmd_to_simcomm("SIM_READY", "AT+CPIN?" GSM_NL);
+    this->sendCommand("SIM_READY", "AT+CPIN?" GSM_NL);
     return this->wait_response(timeout);
 }
 
 int A7672SA::signal_quality(uint32_t timeout)
 {
-    this->send_cmd_to_simcomm("SIGNAL_QUALITY", "AT+CSQ" GSM_NL);
+    this->sendCommand("SIGNAL_QUALITY", "AT+CSQ" GSM_NL);
     if (this->wait_response(timeout))
     {
         String data_string = "";
@@ -427,13 +465,13 @@ bool A7672SA::set_apn(const char *apn, uint32_t timeout)
 {
     char data[100];
     sprintf(data, "AT+CGDCONT=1,\"IP\",\"%s\"" GSM_NL, apn);
-    this->send_cmd_to_simcomm("SET_APN", data);
+    this->sendCommand("SET_APN", data);
     if (this->wait_response(timeout))
     {
-        this->send_cmd_to_simcomm("SET_APN", "AT+CGACT=1,1" GSM_NL);
+        this->sendCommand("SET_APN", "AT+CGACT=1,1" GSM_NL);
         if (this->wait_response(timeout))
         {
-            this->send_cmd_to_simcomm("SET_APN", "AT+CREG=1" GSM_NL);
+            this->sendCommand("SET_APN", "AT+CREG=1" GSM_NL);
             return this->wait_response(timeout);
         }
     }
@@ -442,7 +480,7 @@ bool A7672SA::set_apn(const char *apn, uint32_t timeout)
 
 bool A7672SA::wait_network(uint32_t timeout)
 {
-    this->send_cmd_to_simcomm("WAIT_NETWORK", "AT+CREG?" GSM_NL);
+    this->sendCommand("WAIT_NETWORK", "AT+CREG?" GSM_NL);
     if (this->wait_response(timeout))
     {
         String data_string = "";
@@ -471,10 +509,10 @@ bool A7672SA::set_ntp_server(const char *ntp_server, int time_zone, uint32_t tim
 {
     char data[100];
     sprintf(data, "AT+CNTP=\"%s\",%d" GSM_NL, ntp_server, time_zone);
-    this->send_cmd_to_simcomm("SET_NTP_SERVER", data);
+    this->sendCommand("SET_NTP_SERVER", data);
     if (this->wait_response(timeout))
     {
-        this->send_cmd_to_simcomm("SET_NTP_SERVER", "AT+CNTP" GSM_NL);
+        this->sendCommand("SET_NTP_SERVER", "AT+CNTP" GSM_NL);
         return this->wait_response(timeout);
     }
     return false;
@@ -501,7 +539,7 @@ time_t convertToTimestamp(const char *arry)
 
 time_t A7672SA::get_ntp_time(uint32_t timeout)
 {
-    this->send_cmd_to_simcomm("GET_NTP_TIME", "AT+CCLK?" GSM_NL);
+    this->sendCommand("GET_NTP_TIME", "AT+CCLK?" GSM_NL);
     if (wait_response(timeout))
     {
         String data_string = "";
@@ -536,7 +574,7 @@ AT+CSPN anwser:
 */
 String A7672SA::get_provider_name(uint32_t timeout)
 {
-    this->send_cmd_to_simcomm("GET_PROVIDER_NAME", "AT+CSPN?" GSM_NL);
+    this->sendCommand("GET_PROVIDER_NAME", "AT+CSPN?" GSM_NL);
     if (this->wait_response(timeout))
     {
         String data_string = "";
@@ -567,7 +605,7 @@ AT+CGSN anwser:
 */
 String A7672SA::get_imei(uint32_t timeout)
 {
-    this->send_cmd_to_simcomm("GET_IMEI", "AT+CGSN" GSM_NL);
+    this->sendCommand("GET_IMEI", "AT+CGSN" GSM_NL);
     if (this->wait_response(timeout))
     {
         String data_string = "";
@@ -596,7 +634,7 @@ AT+CICCID
 */
 String A7672SA::get_iccid(uint32_t timeout)
 {
-    this->send_cmd_to_simcomm("GET_ICCID", "AT+CICCID" GSM_NL);
+    this->sendCommand("GET_ICCID", "AT+CICCID" GSM_NL);
     if (this->wait_response(timeout))
     {
         String data_string = "";
@@ -626,7 +664,7 @@ AT+CGPADDR anwser:
 */
 IPAddress A7672SA::get_local_ip(uint32_t timeout)
 {
-    this->send_cmd_to_simcomm("GET_LOCAL_IP", "AT+CGPADDR" GSM_NL);
+    this->sendCommand("GET_LOCAL_IP", "AT+CGPADDR" GSM_NL);
     if (this->wait_response(timeout))
     {
         String data_string = "";
@@ -663,7 +701,7 @@ bool A7672SA::set_ca_cert(const char *ca_cert, const char *ca_name, size_t cert_
 {
     char data[100];
     sprintf(data, "AT+CCERTDOWN=\"%s\",%d" GSM_NL, ca_name, cert_size);
-    this->send_cmd_to_simcomm("SET_CA_CERT", data);
+    this->sendCommand("SET_CA_CERT", data);
     if (this->wait_input(timeout))
     {
         xSemaphoreTake(publish_semaphore, 5000 / portTICK_PERIOD_MS);
@@ -678,31 +716,31 @@ bool A7672SA::mqtt_connect(const char *host, uint16_t port, const char *clientId
 {
     if (ssl)
     {
-        this->send_cmd_to_simcomm("MQTT_CONNECT", "AT+CSSLCFG=\"sslversion\",0,4" GSM_NL);
+        this->sendCommand("MQTT_CONNECT", "AT+CSSLCFG=\"sslversion\",0,4" GSM_NL);
         if (this->wait_response(timeout))
-            this->send_cmd_to_simcomm("MQTT_CONNECT", "AT+CSSLCFG=\"authmode\",0,1" GSM_NL);
+            this->sendCommand("MQTT_CONNECT", "AT+CSSLCFG=\"authmode\",0,1" GSM_NL);
         if (this->wait_response(timeout))
-            this->send_cmd_to_simcomm("MQTT_CONNECT", "AT+CSSLCFG=\"enableSNI\",0,0" GSM_NL);
+            this->sendCommand("MQTT_CONNECT", "AT+CSSLCFG=\"enableSNI\",0,0" GSM_NL);
         if (this->wait_response(timeout))
         {
             char cmd[100];
             sprintf(cmd, "AT+CSSLCFG=\"cacert\",0,\"%s\"" GSM_NL, ca_name);
-            this->send_cmd_to_simcomm("MQTT_CONNECT", cmd);
+            this->sendCommand("MQTT_CONNECT", cmd);
             if (this->wait_response(timeout))
-                this->send_cmd_to_simcomm("MQTT_CONNECT", "AT+CMQTTSTART" GSM_NL);
+                this->sendCommand("MQTT_CONNECT", "AT+CMQTTSTART" GSM_NL);
             if (this->wait_response(timeout))
             {
                 sprintf(cmd, "AT+CMQTTACCQ=0,\"%s\",1" GSM_NL, clientId);
-                this->send_cmd_to_simcomm("MQTT_CONNECT", cmd);
+                this->sendCommand("MQTT_CONNECT", cmd);
                 if (this->wait_response(timeout))
                 {
-                    this->send_cmd_to_simcomm("MQTT_CONNECT", "AT+CMQTTSSLCFG=0,0" GSM_NL);
+                    this->sendCommand("MQTT_CONNECT", "AT+CMQTTSSLCFG=0,0" GSM_NL);
                     if (this->wait_response(timeout))
-                        this->send_cmd_to_simcomm("MQTT_CONNECT", "AT+CMQTTCFG=\"checkUTF8\",0,0" GSM_NL);
+                        this->sendCommand("MQTT_CONNECT", "AT+CMQTTCFG=\"checkUTF8\",0,0" GSM_NL);
                     if (this->wait_response(timeout))
-                        this->send_cmd_to_simcomm("MQTT_CONNECT", "AT+CMQTTCFG=\"argtopic\",0,1,1" GSM_NL);
+                        this->sendCommand("MQTT_CONNECT", "AT+CMQTTCFG=\"argtopic\",0,1,1" GSM_NL);
                     if (this->wait_response(timeout))
-                        this->send_cmd_to_simcomm("MQTT_CONNECT", "AT+CMQTTCFG=\"argtopic\",0,1,1" GSM_NL);
+                        this->sendCommand("MQTT_CONNECT", "AT+CMQTTCFG=\"argtopic\",0,1,1" GSM_NL);
                     if (this->wait_response(timeout))
                     {
                         const size_t data_size = strlen(host) + strlen(username) + strlen(password) + 50;
@@ -715,7 +753,7 @@ bool A7672SA::mqtt_connect(const char *host, uint16_t port, const char *clientId
                         {
                             sprintf(data, "AT+CMQTTCONNECT=0,\"tcp://%s:%d\",%d,%d,\"%s\",\"%s\"" GSM_NL, host, port, keepalive, clean_session, username, password);
                         }
-                        this->send_cmd_to_simcomm("MQTT_CONNECT", data);
+                        this->sendCommand("MQTT_CONNECT", data);
                         bool result = this->wait_to_connect(timeout);
                         return result;
                     }
@@ -725,16 +763,16 @@ bool A7672SA::mqtt_connect(const char *host, uint16_t port, const char *clientId
     }
     else
     {
-        this->send_cmd_to_simcomm("MQTT_CONNECT", "AT+CMQTTSTART" GSM_NL);
+        this->sendCommand("MQTT_CONNECT", "AT+CMQTTSTART" GSM_NL);
         if (this->wait_response(timeout))
         {
             char cmd[100];
             sprintf(cmd, "AT+CMQTTACCQ=0,\"%s\"" GSM_NL, clientId);
-            this->send_cmd_to_simcomm("MQTT_CONNECT", cmd);
+            this->sendCommand("MQTT_CONNECT", cmd);
             if (this->wait_response(timeout))
-                this->send_cmd_to_simcomm("MQTT_CONNECT", "AT+CMQTTCFG=\"argtopic\",0,1,1" GSM_NL);
+                this->sendCommand("MQTT_CONNECT", "AT+CMQTTCFG=\"argtopic\",0,1,1" GSM_NL);
             if (this->wait_response(timeout))
-                this->send_cmd_to_simcomm("MQTT_CONNECT", "AT+CMQTTCFG=\"argtopic\",0,1,1" GSM_NL);
+                this->sendCommand("MQTT_CONNECT", "AT+CMQTTCFG=\"argtopic\",0,1,1" GSM_NL);
             if (this->wait_response(timeout))
             {
                 const size_t data_size = strlen(host) + strlen(username) + strlen(password) + 50;
@@ -747,7 +785,7 @@ bool A7672SA::mqtt_connect(const char *host, uint16_t port, const char *clientId
                 {
                     sprintf(data, "AT+CMQTTCONNECT=0,\"tcp://%s:%d\",%d,%d,\"%s\",\"%s\"" GSM_NL, host, port, keepalive, clean_session, username, password);
                 }
-                this->send_cmd_to_simcomm("MQTT_CONNECT", data);
+                this->sendCommand("MQTT_CONNECT", data);
                 bool result = this->wait_to_connect(timeout);
                 return result;
             }
@@ -758,13 +796,13 @@ bool A7672SA::mqtt_connect(const char *host, uint16_t port, const char *clientId
 
 bool A7672SA::mqtt_disconnect(uint32_t timeout)
 {
-    this->send_cmd_to_simcomm("MQTT_DISCONNECT", "AT+CMQTTDISC=0,120" GSM_NL);
+    this->sendCommand("MQTT_DISCONNECT", "AT+CMQTTDISC=0,120" GSM_NL);
     if (this->wait_response(timeout))
     {
-        this->send_cmd_to_simcomm("MQTT_DISCONNECT", "AT+CMQTTREL=0" GSM_NL);
+        this->sendCommand("MQTT_DISCONNECT", "AT+CMQTTREL=0" GSM_NL);
         this->wait_response(timeout);
     }
-    this->send_cmd_to_simcomm("MQTT_DISCONNECT", "AT+CMQTTSTOP" GSM_NL);
+    this->sendCommand("MQTT_DISCONNECT", "AT+CMQTTSTOP" GSM_NL);
     return this->wait_response(timeout);
 }
 
@@ -779,7 +817,7 @@ bool A7672SA::mqtt_publish(const char *topic, byte *data, size_t len, uint16_t q
         char data_string[data_size];
         ESP_LOGI("MQTT_PUBLISH", "LEN =  %d bytes", len);
         sprintf(data_string, "AT+CMQTTPUB=0,\"%s\",%d,%d" GSM_NL, topic, qos, len);
-        this->send_cmd_to_simcomm("MQTT_PUBLISH_CMD", data_string);
+        this->sendCommand("MQTT_PUBLISH_CMD", data_string);
         if (this->wait_input(timeout))
         {
             this->send_cmd_to_simcomm("MQTT_PUBLISH_ZERO", zero_data, len);
@@ -793,7 +831,7 @@ bool A7672SA::mqtt_publish(const char *topic, byte *data, size_t len, uint16_t q
         char data_string[data_size];
         ESP_LOGI("MQTT_PUBLISH", "LEN =  %d bytes", len);
         sprintf(data_string, "AT+CMQTTPUB=0,\"%s\",%d,%d" GSM_NL, topic, qos, len);
-        this->send_cmd_to_simcomm("MQTT_PUBLISH_CMD", data_string);
+        this->sendCommand("MQTT_PUBLISH_CMD", data_string);
         if (this->wait_input(timeout))
         {
             this->send_cmd_to_simcomm("MQTT_PUBLISH_DATA", data, len);
@@ -811,7 +849,7 @@ bool A7672SA::mqtt_subscribe_topics(const char *topic[10], int n_topics, uint16_
         const size_t data_size = strlen(topic[i]) + 50;
         char data_string[data_size];
         sprintf(data_string, "AT+CMQTTSUBTOPIC=0,%d,%d" GSM_NL, strlen(topic[i]), qos);
-        this->send_cmd_to_simcomm("MQTT_SUBSCRIBE", data_string);
+        this->sendCommand("MQTT_SUBSCRIBE", data_string);
         if (this->wait_input(timeout))
         {
             xSemaphoreTake(publish_semaphore, 5000 / portTICK_PERIOD_MS);
@@ -820,7 +858,7 @@ bool A7672SA::mqtt_subscribe_topics(const char *topic[10], int n_topics, uint16_
             this->wait_response(timeout);
         }
     }
-    this->send_cmd_to_simcomm("MQTT_SUBSCRIBE", "AT+CMQTTSUB=0" GSM_NL);
+    this->sendCommand("MQTT_SUBSCRIBE", "AT+CMQTTSUB=0" GSM_NL);
     return this->wait_response(timeout);
 }
 
@@ -829,7 +867,7 @@ bool A7672SA::mqtt_subscribe(const char *topic, uint16_t qos, uint32_t timeout)
     const size_t data_size = strlen(topic) + 50;
     char data_string[data_size];
     sprintf(data_string, "AT+CMQTTSUB=0,\"%s\",%d" GSM_NL, topic, qos);
-    this->send_cmd_to_simcomm("MQTT_SUBSCRIBE", data_string);
+    this->sendCommand("MQTT_SUBSCRIBE", data_string);
     return this->wait_response(timeout);
 }
 
@@ -845,6 +883,6 @@ bool A7672SA::is_ready()
 
 bool A7672SA::mqtt_release_client(uint32_t timeout)
 {
-    this->send_cmd_to_simcomm("MQTT_RELEASE_CLIENT", "AT+CMQTTREL=0" GSM_NL);
+    this->sendCommand("MQTT_RELEASE_CLIENT", "AT+CMQTTREL=0" GSM_NL);
     return this->wait_response(timeout);
 }
