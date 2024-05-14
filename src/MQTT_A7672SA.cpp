@@ -171,7 +171,6 @@ void A7672SA::tx_task()
         commandMessage receivedCommand;
         if (receiveCommand(&receivedCommand))
         {
-            Serial.println(receivedCommand.data);
             send_cmd_to_simcomm(receivedCommand.logName, receivedCommand.data);
         }
 
@@ -262,9 +261,10 @@ void A7672SA::simcomm_response_parser(const char *data) //++ Parser to parse AT 
         this->at_input = true;
         xSemaphoreGive(publish_semaphore);
     }
-    else if (strstr(data, GSM_ERROR)) //++ AT Response for ERROR
+    else if (strstr(data, GSM_ERROR) || strstr(data, "CME ERROR:")) //++ AT Response for ERROR
     {
-        ESP_LOGI("PARSER", "AT Failed");
+        ESP_LOGI("PARSER", "AT ERROR");
+        this->at_error = true;
         this->at_ok = false;
         this->at_input = false;
         this->at_publish = false;
@@ -365,8 +365,9 @@ bool A7672SA::wait_response(uint32_t timeout)
     this->at_input = false;
     this->at_ok = false;
     this->at_publish = false;
+    this->at_error = false;
     uint32_t start = millis();
-    while (!this->at_ok && millis() - start < timeout)
+    while (!this->at_ok && !this->at_error && millis() - start < timeout)
     {
         const int rxBytes = uart_read_bytes(UART_NUM_1, this->at_response, this->rx_buffer_size, 250 / portTICK_RATE_MS);
         if (rxBytes > 0)
@@ -383,8 +384,9 @@ bool A7672SA::wait_input(uint32_t timeout)
     this->at_input = false;
     this->at_ok = false;
     this->at_publish = false;
+    this->at_error = false;
     uint32_t start = millis();
-    while (!this->at_input && millis() - start < timeout)
+    while (!this->at_input && !this->at_error && millis() - start < timeout)
     {
         const int rxBytes = uart_read_bytes(UART_NUM_1, this->at_response, this->rx_buffer_size, 250 / portTICK_RATE_MS);
         if (rxBytes > 0)
@@ -401,8 +403,9 @@ bool A7672SA::wait_publish(uint32_t timeout)
     this->at_input = false;
     this->at_ok = false;
     this->at_publish = false;
+    this->at_error = false;
     uint32_t start = millis();
-    while (!this->at_publish && millis() - start < timeout)
+    while (!this->at_publish && !this->at_error && millis() - start < timeout)
     {
         const int rxBytes = uart_read_bytes(UART_NUM_1, this->at_response, this->rx_buffer_size, 250 / portTICK_RATE_MS);
         if (rxBytes > 0)

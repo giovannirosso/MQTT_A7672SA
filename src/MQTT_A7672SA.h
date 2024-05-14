@@ -83,6 +83,7 @@ private:
     bool mqtt_connected;
 
     bool at_ok;
+    bool at_error;
     bool at_ready;
     bool at_input;
     bool at_publish;
