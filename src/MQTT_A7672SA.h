@@ -17,6 +17,8 @@
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "freertos/semphr.h"
+#include "freertos/queue.h"
 
 #include "driver/uart.h"
 #include "driver/gpio.h"
@@ -28,6 +30,8 @@
 #define GSM_PROGMEM
 typedef const char *ConstStr;
 
+#define UART_QUEUE_SIZE 10
+
 #define GSM_NL "\r\n"
 #define GSM_NM "+"
 static const char GSM_OK[] GSM_PROGMEM = GSM_NL "OK" GSM_NL;
@@ -38,6 +42,12 @@ struct mqtt_message
     char *topic;
     uint8_t *payload;
     size_t length;
+};
+
+struct commandMessage
+{
+    char logName[48];
+    char data[256];
 };
 
 enum registration_status
@@ -64,6 +74,7 @@ class A7672SA
 {
 private:
     SemaphoreHandle_t publish_semaphore;
+    QueueHandle_t uartQueue;
 
     gpio_num_t tx_pin;
     gpio_num_t rx_pin;
@@ -72,6 +83,7 @@ private:
     bool mqtt_connected;
 
     bool at_ok;
+    bool at_error;
     bool at_ready;
     bool at_input;
     bool at_publish;
@@ -85,6 +97,10 @@ private:
     static void rx_taskImpl(void *pvParameters);
     void tx_task();
     static void tx_taskImpl(void *pvParameters);
+
+    void sendCommand(const char *log, const char *data);
+    void sendCommand(commandMessage message);
+    bool receiveCommand(commandMessage *message);
 
     void simcomm_response_parser(const char *data);
     char **simcom_split_messages(const char *data, int *n_messages);
