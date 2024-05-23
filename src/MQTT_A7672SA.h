@@ -153,6 +153,12 @@ public:
     bool mqtt_subscribe_topics(const char *topic[10], int n_topics = 10, uint16_t qos = 0, uint32_t timeout = 1000);
     bool mqtt_subscribe(const char *topic, uint16_t qos, uint32_t timeout = 1000);
     bool mqtt_is_connected();
+
+    bool http_term(uint32_t timeout = 1000);
+    bool http_request(const char *url, uint8_t method, bool ssl = false, const char *data = "", size_t size = 0, uint32_t timeout = 1000);
+    // bool http_read(uint32_t timeout = 1000);
+    // bool http_read_file(const char *filename, uint32_t timeout = 1000);
+    // bool http_post_file(const char *filename, uint32_t timeout = 1000);
 };
 
 #endif // MQTT_A7672SA_H_
