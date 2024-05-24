@@ -13,6 +13,8 @@ A7672SA::A7672SA()
     this->at_input = false;
     this->at_publish = false;
     this->mqtt_connected = false;
+    this->http_response = false;
+    this->http_response_size = 0;
 }
 
 A7672SA::A7672SA(gpio_num_t tx_pin, gpio_num_t rx_pin, gpio_num_t en_pin, int32_t baud_rate, uint32_t rx_buffer_size)
@@ -22,6 +24,7 @@ A7672SA::A7672SA(gpio_num_t tx_pin, gpio_num_t rx_pin, gpio_num_t en_pin, int32_
     this->at_input = false;
     this->at_publish = false;
     this->mqtt_connected = false;
+    this->http_response = false;
     this->tx_pin = tx_pin;
     this->rx_pin = rx_pin;
     this->en_pin = en_pin;
@@ -265,6 +268,7 @@ void A7672SA::simcomm_response_parser(const char *data) //++ Parser to parse AT 
         this->at_ok = false;
         this->at_input = false;
         this->at_publish = false;
+        this->http_response = false;
         // xSemaphoreGive(publish_semaphore);
     }
     else if (strstr(data, "CMQTTRECV:"))
@@ -330,6 +334,22 @@ void A7672SA::simcomm_response_parser(const char *data) //++ Parser to parse AT 
         int method, errcode, datalen;
         sscanf(data, "HTTPACTION: %d,%d,%d" GSM_NL, &method, &errcode, &datalen);
         ESP_LOGI("PARSER", "METHOD: %d, ERRORCODE: %d, DATALEN: %d", method, errcode, datalen);
+        this->http_response_size = datalen;
+        this->http_response = true;
+    }
+    else if (strstr(data, "HTTPHEAD:"))
+    {
+        int headlen;
+        sscanf(data, "HTTPHEAD: %d" GSM_NL, &headlen);
+        ESP_LOGI("PARSER", "HEADLEN: %d", headlen);
+    }
+    else if (strstr(data, "HTTPREAD:"))
+    {
+        int readlen;
+        String dataString;
+        sscanf(data, "HTTPREAD: %d" GSM_NL "%s", &readlen, &dataString);
+        ESP_LOGI("PARSER", "READLEN: %d", readlen);
+        ESP_LOGI("PARSER", "DATA: %s", dataString.c_str());
     }
     else
     {
@@ -368,6 +388,7 @@ bool A7672SA::wait_response(uint32_t timeout)
     this->at_ok = false;
     this->at_publish = false;
     this->at_error = false;
+    this->http_response = false;
     uint32_t start = millis();
     while (!this->at_ok && !this->at_error && millis() - start < timeout)
     {
@@ -387,6 +408,7 @@ bool A7672SA::wait_input(uint32_t timeout)
     this->at_ok = false;
     this->at_publish = false;
     this->at_error = false;
+    this->http_response = false;
     uint32_t start = millis();
     while (!this->at_input && !this->at_error && millis() - start < timeout)
     {
@@ -406,6 +428,7 @@ bool A7672SA::wait_publish(uint32_t timeout)
     this->at_ok = false;
     this->at_publish = false;
     this->at_error = false;
+    this->http_response = false;
     uint32_t start = millis();
     while (!this->at_publish && !this->at_error && millis() - start < timeout)
     {
@@ -421,6 +444,12 @@ bool A7672SA::wait_publish(uint32_t timeout)
 
 bool A7672SA::wait_to_connect(uint32_t timeout)
 {
+    this->at_input = false;
+    this->at_ok = false;
+    this->at_publish = false;
+    this->at_error = false;
+    this->http_response = false;
+    this->mqtt_connected = false;
     uint32_t start = millis();
     while (!this->mqtt_connected && millis() - start < timeout)
     {
@@ -432,6 +461,26 @@ bool A7672SA::wait_to_connect(uint32_t timeout)
         }
     }
     return this->mqtt_connected;
+}
+
+bool A7672SA::wait_http_response(uint32_t timeout)
+{
+    this->at_input = false;
+    this->at_ok = false;
+    this->at_publish = false;
+    this->at_error = false;
+    this->http_response = false;
+    uint32_t start = millis();
+    while (!this->http_response && millis() - start < timeout)
+    {
+        const int rxBytes = uart_read_bytes(UART_NUM_1, this->at_response, this->rx_buffer_size, 250 / portTICK_RATE_MS);
+        if (rxBytes > 0)
+        {
+            this->at_response[rxBytes] = 0;
+            this->simcomm_response_parser(this->at_response); //++ Call the AT Response Parser Function
+        }
+    }
+    return this->http_response;
 }
 
 bool A7672SA::test_at(uint32_t timeout)
@@ -898,49 +947,93 @@ bool A7672SA::http_term(uint32_t timeout)
     return this->wait_response(timeout);
 }
 
-/*
-    0 GET
-    1 POST
-    2 HEAD
-    3 DELETE
-    4 PUT
-*/
-bool A7672SA::http_request(const char *url, uint8_t method, bool ssl, const char *data, size_t size, uint32_t timeout)
+uint32_t A7672SA::http_request(const char *url, HTTP_METHOD method, bool ssl, const char *ca_name, const char *user_data, size_t user_data_size, uint32_t con_timeout, uint32_t recv_timeout, const char *content, const char *accept, uint8_t read_mode, const char *data_post, size_t size, uint32_t timeout)
 {
-
     this->sendCommand("HTTP_INIT", "AT+HTTPINIT" GSM_NL);
     if (this->wait_response(timeout))
     {
-        if (ssl)
-        {
-            this->sendCommand("HTTP_SSL", "AT+HTTPPARA=\"SSLCFG\",0" GSM_NL);
-            this->wait_response(timeout);
-        }
         char cmd[100];
         sprintf(cmd, "AT+HTTPPARA=\"URL\",\"%s\"" GSM_NL, url);
         this->sendCommand("HTTP_REQUEST", cmd);
+        this->wait_response(timeout);
+
+        if (ssl)
+        {
+            this->sendCommand("HTTP_SSL", "AT+CSSLCFG=\"sslversion\",0,4" GSM_NL);
+            if (this->wait_response(timeout))
+                this->sendCommand("HTTP_SSL", "AT+CSSLCFG=\"authmode\",0,1" GSM_NL);
+            if (this->wait_response(timeout))
+                this->sendCommand("HTTP_SSL", "AT+CSSLCFG=\"enableSNI\",0,0" GSM_NL);
+            if (this->wait_response(timeout))
+            {
+                sprintf(cmd, "AT+CSSLCFG=\"cacert\",0,\"%s\"" GSM_NL, ca_name);
+                this->sendCommand("MQTT_CONNECT", cmd);
+                this->wait_response(timeout);
+                this->sendCommand("HTTP_SSL", "AT+HTTPPARA=\"SSLCFG\",0" GSM_NL);
+                this->wait_response(timeout);
+            }
+        }
+
+        sprintf(cmd, "AT+HTTPPARA=\"CONNECTTO\",%d" GSM_NL, con_timeout);
+        this->sendCommand("HTTP_REQUEST", cmd);
+        this->wait_response(timeout);
+        sprintf(cmd, "AT+HTTPPARA=\"RECVTO\",%d" GSM_NL, recv_timeout);
+        this->sendCommand("HTTP_REQUEST", cmd);
+        this->wait_response(timeout);
+        sprintf(cmd, "AT+HTTPPARA=\"CONTENT\",\"%s\"" GSM_NL, content);
+        this->sendCommand("HTTP_REQUEST", cmd);
+        this->wait_response(timeout);
+        sprintf(cmd, "AT+HTTPPARA=\"ACCEPT\",\"%s\"" GSM_NL, accept);
+        this->sendCommand("HTTP_REQUEST", cmd);
+        this->wait_response(timeout);
+
+        if (user_data_size > 0)
+        {
+            // malloc
+            char data_[user_data_size + 40];
+            sprintf(data_, "AT+HTTPPARA=\"USERDATA\",\"%s\"" GSM_NL, user_data);
+            this->sendCommand("HTTP_REQUEST", data_);
+            this->wait_response(timeout);
+        }
+
+        sprintf(cmd, "AT+HTTPPARA=\"READMODE\",%d" GSM_NL, read_mode);
+        this->sendCommand("HTTP_REQUEST", cmd);
         if (this->wait_response(timeout))
         {
-            if (method == 1)
+            if (method == HTTP_METHOD::POST)
             {
                 sprintf(cmd, "AT+HTTPDATA=%d,%d" GSM_NL, size, timeout);
                 this->sendCommand("HTTP_REQUEST", cmd);
                 if (this->wait_input(timeout))
                 {
-                    this->send_cmd_to_simcomm("HTTP_REQUEST", (byte *)data, size);
+                    this->send_cmd_to_simcomm("HTTP_REQUEST", (byte *)data_post, size);
                     if (this->wait_response(timeout))
                     {
                         return true;
                     }
                 }
             }
+
             sprintf(cmd, "AT+HTTPACTION=%d" GSM_NL, method);
             this->sendCommand("HTTP_REQUEST", cmd);
-            if (this->wait_response(timeout))
+            if (this->wait_http_response(120000))
             {
-                return true;
+                this->sendCommand("HTTP_REQUEST", "AT+HTTPHEAD" GSM_NL);
+                this->wait_response(timeout);
+
+                return this->http_response_size;
             }
         }
     }
-    return false;
+    return 0;
+}
+
+bool A7672SA::http_read_response(size_t read_size, uint32_t timeout)
+{
+    char cmd[30];
+    sprintf(cmd, "AT+HTTPREAD=0,%d" GSM_NL, read_size);
+    this->sendCommand("HTTP_REQUEST", cmd);
+    this->wait_response(timeout);
+    // this->sendCommand("HTTP_REQUEST", "AT+HTTPTERM" GSM_NL);
+    // this->wait_response(timeout);
 }
