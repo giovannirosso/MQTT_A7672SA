@@ -79,10 +79,31 @@ bool A7672SA::begin()
 
     uartQueue = xQueueCreate(UART_QUEUE_SIZE, sizeof(commandMessage));
 
-    xTaskCreatePinnedToCore(this->rx_taskImpl, "uart_rx_task", 2048 * 3, this, configMAX_PRIORITIES - 5, NULL, 1); //++ Create FreeRtos Tasks
-    xTaskCreatePinnedToCore(this->tx_taskImpl, "uart_tx_task", 2048 * 2, this, configMAX_PRIORITIES - 6, NULL, 1);
+    xTaskCreatePinnedToCore(this->rx_taskImpl, "uart_rx_task", 1024 * 12, this, configMAX_PRIORITIES - 5, &rxTaskHandle, 1); //++ Create FreeRtos Tasks //todo tamanho da memoria
+    xTaskCreatePinnedToCore(this->tx_taskImpl, "uart_tx_task", 1024 * 12, this, configMAX_PRIORITIES - 5, &txTaskHandle, 1);
 
     ESP_LOGI("BEGIN", "SIMCOMM Started");
+    return true;
+}
+
+bool A7672SA::stop()
+{
+    if (this->mqtt_connected)
+    {
+        this->mqtt_disconnect();
+    }
+
+    if (this->at_response != NULL)
+    {
+        free(this->at_response);
+    }
+
+    // uart_driver_delete(UART_NUM_1);
+
+    vTaskDelete(rxTaskHandle);
+    vTaskDelete(txTaskHandle);
+
+    ESP_LOGI("STOP", "SIMCOMM Stopped");
     return true;
 }
 
@@ -94,10 +115,6 @@ void A7672SA::sendCommand(const char *logName, const char *data)
     strcpy(message.data, data);
     xQueueSend(uartQueue, &message, portMAX_DELAY);
     // sendCommand(message);
-}
-
-void A7672SA::sendCommand(commandMessage message)
-{
 }
 
 bool A7672SA::receiveCommand(commandMessage *message)
@@ -333,6 +350,14 @@ void A7672SA::simcomm_response_parser(const char *data) //++ Parser to parse AT 
     {
         int method, errcode, datalen;
         sscanf(data, "HTTPACTION: %d,%d,%d" GSM_NL, &method, &errcode, &datalen);
+        ESP_LOGI("PARSER", "METHOD: %d, ERRORCODE: %d, DATALEN: %d", method, errcode, datalen);
+        this->http_response_size = datalen;
+        this->http_response = true;
+    }
+    else if (strstr(data, "HTTPPOSTFILE:"))
+    {
+        int method, errcode, datalen;
+        sscanf(data, "HTTPPOSTFILE: %d,%d,%d" GSM_NL, &method, &errcode, &datalen);
         ESP_LOGI("PARSER", "METHOD: %d, ERRORCODE: %d, DATALEN: %d", method, errcode, datalen);
         this->http_response_size = datalen;
         this->http_response = true;
@@ -939,15 +964,9 @@ bool A7672SA::mqtt_release_client(uint32_t timeout)
     return this->wait_response(timeout);
 }
 
-bool A7672SA::http_term(uint32_t timeout)
-{
-    // this->sendCommand("HTTP_TERM", "AT+HTTPHEAD" GSM_NL);
-    // this->wait_response(timeout);
-    this->sendCommand("HTTP_TERM", "AT+HTTPTERM" GSM_NL);
-    return this->wait_response(timeout);
-}
-
-uint32_t A7672SA::http_request(const char *url, HTTP_METHOD method, bool ssl, const char *ca_name, const char *user_data, size_t user_data_size, uint32_t con_timeout, uint32_t recv_timeout, const char *content, const char *accept, uint8_t read_mode, const char *data_post, size_t size, uint32_t timeout)
+uint32_t A7672SA::http_request(const char *url, HTTP_METHOD method, bool ssl, const char *ca_name,
+                               const char *user_data, size_t user_data_size, uint32_t con_timeout, uint32_t recv_timeout, const char *content,
+                               const char *accept, uint8_t read_mode, const char *data_post, size_t size, uint32_t timeout)
 {
     this->sendCommand("HTTP_INIT", "AT+HTTPINIT" GSM_NL);
     if (this->wait_response(timeout))
@@ -989,7 +1008,6 @@ uint32_t A7672SA::http_request(const char *url, HTTP_METHOD method, bool ssl, co
 
         if (user_data_size > 0)
         {
-            // malloc
             char data_[user_data_size + 40];
             sprintf(data_, "AT+HTTPPARA=\"USERDATA\",\"%s\"" GSM_NL, user_data);
             this->sendCommand("HTTP_REQUEST", data_);
@@ -1028,12 +1046,132 @@ uint32_t A7672SA::http_request(const char *url, HTTP_METHOD method, bool ssl, co
     return 0;
 }
 
+bool A7672SA::http_request_file(const char *url, HTTP_METHOD method, const char *filename, bool ssl, const char *ca_name,
+                                const char *user_data, size_t user_data_size, uint32_t con_timeout, uint32_t recv_timeout,
+                                const char *content, const char *accept, uint8_t read_mode, const char *data_post, size_t size, uint32_t timeout)
+{
+    char cmd[100];
+    sprintf(cmd, "AT+FSOPEN=C:/%s,0" GSM_NL, filename);
+    this->sendCommand("FS", cmd);
+    this->wait_response(timeout);
+    this->sendCommand("FS", "AT+FSCLOSE=1" GSM_NL);
+    this->wait_response(timeout);
+    this->sendCommand("HTTP_INIT", "AT+HTTPINIT" GSM_NL);
+    if (this->wait_response(timeout))
+    {
+        sprintf(cmd, "AT+HTTPPARA=\"URL\",\"%s\"" GSM_NL, url);
+        this->sendCommand("HTTP_REQUEST", cmd);
+        this->wait_response(timeout);
+
+        if (ssl)
+        {
+            this->sendCommand("HTTP_SSL", "AT+CSSLCFG=\"sslversion\",0,4" GSM_NL);
+            if (this->wait_response(timeout))
+                this->sendCommand("HTTP_SSL", "AT+CSSLCFG=\"authmode\",0,1" GSM_NL);
+            if (this->wait_response(timeout))
+                this->sendCommand("HTTP_SSL", "AT+CSSLCFG=\"enableSNI\",0,0" GSM_NL);
+            if (this->wait_response(timeout))
+            {
+                sprintf(cmd, "AT+CSSLCFG=\"cacert\",0,\"%s\"" GSM_NL, ca_name);
+                this->sendCommand("MQTT_CONNECT", cmd);
+                this->wait_response(timeout);
+                this->sendCommand("HTTP_SSL", "AT+HTTPPARA=\"SSLCFG\",0" GSM_NL);
+                this->wait_response(timeout);
+            }
+        }
+
+        sprintf(cmd, "AT+HTTPPARA=\"CONNECTTO\",%d" GSM_NL, con_timeout);
+        this->sendCommand("HTTP_REQUEST", cmd);
+        this->wait_response(timeout);
+        sprintf(cmd, "AT+HTTPPARA=\"RECVTO\",%d" GSM_NL, recv_timeout);
+        this->sendCommand("HTTP_REQUEST", cmd);
+        this->wait_response(timeout);
+        sprintf(cmd, "AT+HTTPPARA=\"CONTENT\",\"%s\"" GSM_NL, content);
+        this->sendCommand("HTTP_REQUEST", cmd);
+        this->wait_response(timeout);
+        sprintf(cmd, "AT+HTTPPARA=\"ACCEPT\",\"%s\"" GSM_NL, accept);
+        this->sendCommand("HTTP_REQUEST", cmd);
+        this->wait_response(timeout);
+
+        if (user_data_size > 0)
+        {
+            char data_[user_data_size + 40];
+            sprintf(data_, "AT+HTTPPARA=\"USERDATA\",\"%s\"" GSM_NL, user_data);
+            this->sendCommand("HTTP_REQUEST", data_);
+            this->wait_response(timeout);
+        }
+
+        sprintf(cmd, "AT+HTTPPARA=\"READMODE\",%d" GSM_NL, read_mode);
+        this->sendCommand("HTTP_REQUEST", cmd);
+        if (this->wait_response(timeout))
+        {
+            if (method == HTTP_METHOD::POST)
+            {
+                sprintf(cmd, "AT+HTTPDATA=%d,%d" GSM_NL, size, timeout);
+                this->sendCommand("HTTP_REQUEST", cmd);
+                if (this->wait_input(timeout))
+                {
+                    this->send_cmd_to_simcomm("HTTP_REQUEST", (byte *)data_post, size);
+                    if (this->wait_response(timeout))
+                    {
+                        return true;
+                    }
+                }
+            }
+
+            sprintf(cmd, "AT+HTTPPOSTFILE=\"%s\",1,%d,1" GSM_NL, filename, method);
+            this->sendCommand("HTTP_REQUEST", cmd);
+            if (this->wait_http_response(120000))
+            {
+                this->sendCommand("HTTP_REQUEST", "AT+HTTPHEAD" GSM_NL);
+                this->wait_response(timeout);
+
+                return true;
+            }
+        }
+    }
+}
+
 bool A7672SA::http_read_response(size_t read_size, uint32_t timeout)
 {
-    char cmd[30];
-    sprintf(cmd, "AT+HTTPREAD=0,%d" GSM_NL, read_size);
+    // char cmd[100];
+    // sprintf(cmd, "AT+HTTPREAD=0,%d" GSM_NL, read_size);
+    this->send_cmd_to_simcomm("HTTP_REQUEST", "AT+HTTPREAD=0,1024" GSM_NL);
+    // this->sendCommand("HTTP_REQUEST", cmd);
+    // this->wait_response(timeout);
+}
+
+bool A7672SA::http_read_file(const char *filename, uint32_t timeout)
+{
+    char cmd[100];
+    sprintf(cmd, "AT+HTTPREADFILE=\"%s\"" GSM_NL, filename);
     this->sendCommand("HTTP_REQUEST", cmd);
     this->wait_response(timeout);
-    // this->sendCommand("HTTP_REQUEST", "AT+HTTPTERM" GSM_NL);
-    // this->wait_response(timeout);
+}
+
+bool A7672SA::http_term(uint32_t timeout)
+{
+    this->sendCommand("HTTP_TERM", "AT+HTTPTERM" GSM_NL);
+    return this->wait_response(timeout);
+}
+
+bool A7672SA::read_file(const char *filename, size_t len, uint32_t timeout)
+{
+    char cmd[100];
+    this->sendCommand("FS", "AT+FSLS?" GSM_NL);
+    this->wait_response(timeout);
+    this->sendCommand("FS", "AT+FSLS" GSM_NL);
+    this->wait_response(timeout);
+    this->sendCommand("FS", "AT+FSMEM" GSM_NL);
+    this->wait_response(timeout);
+    sprintf(cmd, "AT+FSOPEN=C:/%s,0" GSM_NL, filename);
+    this->sendCommand("FS", cmd);
+    this->wait_response(timeout);
+
+    sprintf(cmd, "AT+FSREAD=1,%d" GSM_NL, len);
+    this->sendCommand("FS", cmd);
+    this->wait_response(timeout);
+
+    this->sendCommand("FS", "AT+FSCLOSE=1" GSM_NL);
+    this->wait_response(timeout);
 }
