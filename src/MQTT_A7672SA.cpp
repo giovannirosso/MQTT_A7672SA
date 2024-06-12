@@ -378,7 +378,7 @@ void A7672SA::simcomm_response_parser(const char *data) //++ Parser to parse AT 
     }
     else
     {
-        ESP_LOGI("PARSER", "Unhandeled AT Response %s", data); //
+        ESP_LOGI("PARSER", "Unhandled AT Response %s", data); //++ Unhandled AT Response
     }
 }
 
@@ -1034,7 +1034,7 @@ uint32_t A7672SA::http_request(const char *url, HTTP_METHOD method, bool ssl, co
 
             sprintf(cmd, "AT+HTTPACTION=%d" GSM_NL, method);
             this->sendCommand("HTTP_REQUEST", cmd);
-            if (this->wait_http_response(120000))
+            if (this->wait_http_response(recv_timeout * 1000))
             {
                 this->sendCommand("HTTP_REQUEST", "AT+HTTPHEAD" GSM_NL);
                 this->wait_response(timeout);
@@ -1121,7 +1121,7 @@ bool A7672SA::http_request_file(const char *url, HTTP_METHOD method, const char 
 
             sprintf(cmd, "AT+HTTPPOSTFILE=\"%s\",1,%d,1" GSM_NL, filename, method);
             this->sendCommand("HTTP_REQUEST", cmd);
-            if (this->wait_http_response(120000))
+            if (this->wait_http_response(recv_timeout * 1000))
             {
                 this->sendCommand("HTTP_REQUEST", "AT+HTTPHEAD" GSM_NL);
                 this->wait_response(timeout);
@@ -1132,21 +1132,29 @@ bool A7672SA::http_request_file(const char *url, HTTP_METHOD method, const char 
     }
 }
 
-bool A7672SA::http_read_response(size_t read_size, uint32_t timeout)
+void A7672SA::http_read_response(size_t read_size, uint32_t timeout)
 {
-    // char cmd[100];
-    // sprintf(cmd, "AT+HTTPREAD=0,%d" GSM_NL, read_size);
-    this->send_cmd_to_simcomm("HTTP_REQUEST", "AT+HTTPREAD=0,1024" GSM_NL);
-    // this->sendCommand("HTTP_REQUEST", cmd);
-    // this->wait_response(timeout);
+    char cmd[100];
+    sprintf(cmd, "AT+HTTPREAD=0,%d" GSM_NL, read_size);
+    this->sendCommand("HTTP_REQUEST", cmd);
+    this->wait_response(timeout);
 }
 
-bool A7672SA::http_read_file(const char *filename, uint32_t timeout)
+void A7672SA::http_read_file(const char *filename, uint32_t timeout)
 {
     char cmd[100];
     sprintf(cmd, "AT+HTTPREADFILE=\"%s\"" GSM_NL, filename);
     this->sendCommand("HTTP_REQUEST", cmd);
     this->wait_response(timeout);
+}
+
+void A7672SA::http_save_response(bool https)
+{
+    if (https)
+        this->sendCommand("FS", "AT+FSCOPY=C:/https_body.dat,binary.dat" GSM_NL); // C:/
+    else
+        this->sendCommand("FS", "AT+FSCOPY=C:/http_body.dat,binary.dat" GSM_NL); // C:/
+    this->wait_response();
 }
 
 bool A7672SA::http_term(uint32_t timeout)
@@ -1155,23 +1163,61 @@ bool A7672SA::http_term(uint32_t timeout)
     return this->wait_response(timeout);
 }
 
-bool A7672SA::read_file(const char *filename, size_t len, uint32_t timeout)
+void A7672SA::read_file(const char *filename, size_t len, uint32_t timeout)
 {
     char cmd[100];
-    this->sendCommand("FS", "AT+FSLS?" GSM_NL);
-    this->wait_response(timeout);
-    this->sendCommand("FS", "AT+FSLS" GSM_NL);
-    this->wait_response(timeout);
-    this->sendCommand("FS", "AT+FSMEM" GSM_NL);
-    this->wait_response(timeout);
-    sprintf(cmd, "AT+FSOPEN=C:/%s,0" GSM_NL, filename);
+
+    // this->sendCommand("FS", "AT+FSLS?" GSM_NL);
+    // this->wait_response(timeout);
+    // this->sendCommand("FS", "AT+FSLS" GSM_NL);
+    // this->wait_response(timeout);
+    // this->sendCommand("FS", "AT+FSMEM" GSM_NL);
+    // this->wait_response(timeout);
+
+    sprintf(cmd, "AT+FSATTRI=%s" GSM_NL, filename);
+    this->sendCommand("FS", cmd);
+    this->wait_response();
+
+    sprintf(cmd, "AT+FSOPEN=C:/%s,2" GSM_NL, filename);
     this->sendCommand("FS", cmd);
     this->wait_response(timeout);
 
     sprintf(cmd, "AT+FSREAD=1,%d" GSM_NL, len);
     this->sendCommand("FS", cmd);
-    this->wait_response(timeout);
 
-    this->sendCommand("FS", "AT+FSCLOSE=1" GSM_NL);
-    this->wait_response(timeout);
+    // uint32_t readed = 0;
+    // char *buffer = (char *)malloc(this->rx_buffer_size + 1);
+    // while (1)
+    // {
+    //     const int rxBytes = uart_read_bytes(UART_NUM_1, buffer, 1024 * 10, 100 / portTICK_RATE_MS);
+    //     if (rxBytes > 0)
+    //     {
+    //         buffer[rxBytes] = 0;
+    //         this->write_to_fs(SPIFFS, "/hook_bin.bin", buffer);
+    //         readed += rxBytes;
+    //         ESP_LOGI("READ_FILE", "Readed %d bytes", readed);
+    //     }
+    // }
+
+    // this->sendCommand("FS", "AT+FSCLOSE=1" GSM_NL);
+    // this->wait_response(timeout);
+}
+
+void A7672SA::write_to_fs(fs::FS &fs, const char *path, const char *message)
+{
+    File file = fs.open(path, FILE_APPEND);
+    if (!file)
+    {
+        ESP_LOGI("WRITE_FS", "- failed to open file for appending");
+        return;
+    }
+    if (file.print(message))
+    {
+        ESP_LOGI("WRITE_FS", "- message appended");
+    }
+    else
+    {
+        ESP_LOGI("WRITE_FS", "- append failed");
+    }
+    file.close();
 }
