@@ -12,39 +12,6 @@ bool fodase = false;
 A7672SA modem(GPIO_NUM_17, GPIO_NUM_16, GPIO_NUM_27);
 
 // #define SSL
-{
-    File updateBin = SPIFFS.open("/update.bin");
-    if (updateBin)
-    {
-        if (updateBin.isDirectory())
-        {
-            Serial.println("Directory error");
-            updateBin.close();
-            return;
-        }
-
-        size_t updateSize = updateBin.size();
-
-        if (updateSize > 0)
-        {
-            Serial.println("Starting update");
-            performUpdate(updateBin, updateSize);
-        }
-        else
-        {
-            Serial.println("Error, archivo vacío");
-        }
-
-        updateBin.close();
-
-        // whe finished remove the binary from sd card to indicate end of the process
-        // fs.remove("/update.bin");
-    }
-    else
-    {
-        Serial.println("no such binary");
-    }
-}
 
 void doUpdateTask(void *vParameters)
 {
