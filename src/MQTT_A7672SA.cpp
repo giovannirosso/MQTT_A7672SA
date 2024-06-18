@@ -1,5 +1,5 @@
+/*@file MQTT_A7672SA.cpp
 /**
- * @file       MQTT_A7672SA.cpp
  * @author     Giovanni de Rosso Unruh
  * @date       07/2023
  */
@@ -75,12 +75,12 @@ bool A7672SA::begin()
     gpio_set_level(this->en_pin, 0);
     vTaskDelay(5000 / portTICK_PERIOD_MS);
 
-    // publish_semaphore = xSemaphoreCreateBinary(); //++ Create FreeRtos Semaphore
+    this->uart_guard = xSemaphoreCreateMutex(); //++ Create FreeRtos Semaphore
 
     uartQueue = xQueueCreate(UART_QUEUE_SIZE, sizeof(commandMessage));
 
-    xTaskCreatePinnedToCore(this->rx_taskImpl, "uart_rx_task", 1024 * 12, this, configMAX_PRIORITIES - 5, &rxTaskHandle, 1); //++ Create FreeRtos Tasks //todo tamanho da memoria
-    xTaskCreatePinnedToCore(this->tx_taskImpl, "uart_tx_task", 1024 * 12, this, configMAX_PRIORITIES - 5, &txTaskHandle, 1);
+    xTaskCreatePinnedToCore(this->rx_taskImpl, "uart_rx_task", 1024 * 5, this, configMAX_PRIORITIES - 5, &rxTaskHandle, 1); //++ Create FreeRtos Tasks //todo tamanho da memoria
+    xTaskCreatePinnedToCore(this->tx_taskImpl, "uart_tx_task", 1024 * 5, this, configMAX_PRIORITIES - 5, &txTaskHandle, 1);
 
     ESP_LOGI("BEGIN", "SIMCOMM Started");
     return true;
@@ -140,6 +140,7 @@ void A7672SA::rx_task() //++ UART Receive Task
 
     while (1)
     {
+        xSemaphoreTake(this->uart_guard, portMAX_DELAY);
         const int rxBytes = uart_read_bytes(UART_NUM_1, this->at_response, this->rx_buffer_size, 100 / portTICK_RATE_MS);
         if (rxBytes > 0)
         {
@@ -155,6 +156,8 @@ void A7672SA::rx_task() //++ UART Receive Task
             }
             free(messages);
         }
+        xSemaphoreGive(this->uart_guard);
+        vTaskDelay(10 / portTICK_PERIOD_MS);
     }
     free(this->at_response);
 }
@@ -374,7 +377,6 @@ void A7672SA::simcomm_response_parser(const char *data) //++ Parser to parse AT 
         String dataString;
         sscanf(data, "HTTPREAD: %d" GSM_NL "%s", &readlen, &dataString);
         ESP_LOGI("PARSER", "READLEN: %d", readlen);
-        ESP_LOGI("PARSER", "DATA: %s", dataString.c_str());
     }
     else
     {
@@ -1132,12 +1134,38 @@ bool A7672SA::http_request_file(const char *url, HTTP_METHOD method, const char 
     }
 }
 
-void A7672SA::http_read_response(size_t read_size, uint32_t timeout)
+// para que o buffer seja preenchido é necessário que que a tarefa que chama essa função pegue o mutex uart_guard
+size_t A7672SA::http_read_response(size_t read_size, uint8_t *buffer, uint32_t timeout)
 {
+    uint32_t start = millis();
+
+    int read_len = 0;
+    int res_len = 0;
+
     char cmd[100];
-    sprintf(cmd, "AT+HTTPREAD=0,%d" GSM_NL, read_size);
-    this->sendCommand("HTTP_REQUEST", cmd);
-    this->wait_response(timeout);
+    sprintf(cmd, "AT+FSREAD=1,%d" GSM_NL, read_size);
+
+    this->sendCommand("FS", cmd);
+    const int rxBytes = uart_read_bytes(UART_NUM_1, this->at_response, this->rx_buffer_size, 250 / portTICK_RATE_MS);
+
+    if (rxBytes > 0)
+    {
+        this->at_response[rxBytes] = 0;
+        if (strstr(this->at_response, "CONNECT") == NULL)
+        {
+            return -1;
+        }
+
+        sscanf(this->at_response, "%*s %d%*s", &read_len);
+        if (read_len <= 0)
+            return -2;
+
+        // calcula o tamanho do read_len em dígitos, para obter o offset do buffer de resposta da UART
+        // não queremos o CONNECT %d\r\n
+        res_len = floor(log10(read_len)) + 1 + 12;
+        memcpy(buffer, this->at_response + res_len, read_len);
+    }
+    return read_len;
 }
 
 void A7672SA::http_read_file(const char *filename, uint32_t timeout)

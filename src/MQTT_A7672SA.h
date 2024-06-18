@@ -84,7 +84,6 @@ enum HTTP_METHOD
 class A7672SA
 {
 private:
-    SemaphoreHandle_t publish_semaphore;
     QueueHandle_t uartQueue;
     TaskHandle_t rxTaskHandle;
     TaskHandle_t txTaskHandle;
@@ -124,8 +123,10 @@ private:
 
 public:
     A7672SA();
-    A7672SA(gpio_num_t tx_pin, gpio_num_t rx_pin, gpio_num_t en_pin, int32_t baud_rate = 115200, uint32_t rx_buffer_size = 1024 * 10); // todo 1024
+    A7672SA(gpio_num_t tx_pin, gpio_num_t rx_pin, gpio_num_t en_pin, int32_t baud_rate = 115200, uint32_t rx_buffer_size = 10240); // todo 1024
     ~A7672SA();
+
+    SemaphoreHandle_t uart_guard;
 
     void on_message_callback(void (*callback)(mqtt_message &message))
     {
@@ -196,7 +197,7 @@ public:
     bool http_request_file(const char *url, HTTP_METHOD method, const char *filename, bool ssl = false, const char *ca_name = "ca.pem",
                            const char *user_data = "", size_t user_data_size = 0, uint32_t con_timeout = 120, uint32_t recv_timeout = 120,
                            const char *content = "text/plain", const char *accept = "*/*", uint8_t read_mode = 0, const char *data_post = "", size_t size = 0, uint32_t timeout = 10000);
-    void http_read_response(size_t read_size, uint32_t timeout = 1000);
+    size_t http_read_response(size_t read_size, uint8_t *buffer, uint32_t timeout = 1000);
     void http_read_file(const char *filename, uint32_t timeout = 1000);
     bool http_term(uint32_t timeout = 1000);
     void http_save_response(bool https = false);
