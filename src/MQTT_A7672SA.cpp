@@ -109,7 +109,7 @@ bool A7672SA::stop()
 
 void A7672SA::sendCommand(const char *logName, const char *data)
 {
-    ESP_LOGI(logName, "Sending Command: %s", data);
+    // ESP_LOGI(logName, "Sending Command: %s", data);
     commandMessage message;
     strcpy(message.logName, logName);
     strcpy(message.data, data);
@@ -394,8 +394,8 @@ int A7672SA::send_cmd_to_simcomm(const char *logName, byte *data, int len) //++ 
 {
     // xSemaphoreTake(publish_semaphore, 5000 / portTICK_PERIOD_MS);
     const int txBytes = uart_write_bytes(UART_NUM_1, data, len);
-    ESP_LOGI(logName, "Wrote %d bytes of %d requested", txBytes, len);
-    ESP_LOGI(logName, "Wrote %s", data);
+    // ESP_LOGI(logName, "Wrote %d bytes of %d requested", txBytes, len);
+    // ESP_LOGI(logName, "Wrote %s", data);
     return txBytes;
 }
 
@@ -404,8 +404,8 @@ int A7672SA::send_cmd_to_simcomm(const char *logName, const char *data) //++ Sen
     // xSemaphoreTake(publish_semaphore, 5000 / portTICK_PERIOD_MS);
     const int len = strlen(data);
     const int txBytes = uart_write_bytes(UART_NUM_1, data, len);
-    ESP_LOGI(logName, "Wrote %d bytes of %d requested", txBytes, len);
-    ESP_LOGI(logName, "Wrote %s", data);
+    // ESP_LOGI(logName, "Wrote %d bytes of %d requested", txBytes, len);
+    // ESP_LOGI(logName, "Wrote %s", data);
     return txBytes;
 }
 
@@ -1135,12 +1135,14 @@ bool A7672SA::http_request_file(const char *url, HTTP_METHOD method, const char 
 }
 
 // para que o buffer seja preenchido é necessário que que a tarefa que chama essa função pegue o mutex uart_guard
-size_t A7672SA::http_read_response(size_t read_size, uint8_t *buffer, uint32_t timeout)
+size_t A7672SA::fs_read_response(size_t read_size, uint8_t *buffer, uint32_t timeout)
 {
     uint32_t start = millis();
 
     int read_len = 0;
     int res_len = 0;
+
+    // xSemaphoreTake(this->publish_semaphore, portMAX_DELAY);
 
     char cmd[100];
     sprintf(cmd, "AT+FSREAD=1,%d" GSM_NL, read_size);
@@ -1151,18 +1153,55 @@ size_t A7672SA::http_read_response(size_t read_size, uint8_t *buffer, uint32_t t
     if (rxBytes > 0)
     {
         this->at_response[rxBytes] = 0;
-        if (strstr(this->at_response, "CONNECT") == NULL)
+
+        char *result = strstr(this->at_response, "CONNECT");
+        if (*result == NULL)
         {
             return -1;
         }
 
-        sscanf(this->at_response, "%*s %d%*s", &read_len);
+        sscanf(result, "CONNECT %d%*s", &read_len);
+        if (read_len <= 0)
+            return -2;
+        // calcula o tamanho do read_len em dígitos, para obter o offset do buffer de resposta da UART
+        // não queremos o CONNECT %d\r\n
+        res_len = floor(log10(read_len)) + 1 + 12;
+        memcpy(buffer, this->at_response + res_len, read_len);
+    }
+
+    // xSemaphoreGive(this->publish_semaphore);
+    return read_len;
+}
+
+size_t A7672SA::http_read_response(uint8_t *buffer, size_t read_size, size_t offset, uint32_t timeout)
+{
+    uint32_t start = millis();
+
+    int read_len = 0;
+    int res_len = 0;
+
+    char cmd[100];
+    sprintf(cmd, "AT+HTTPREAD=%d,%d" GSM_NL, offset, read_size);
+
+    this->sendCommand("HTTP", cmd);
+    const int rxBytes = uart_read_bytes(UART_NUM_1, this->at_response, this->rx_buffer_size, 250 / portTICK_RATE_MS);
+
+    if (rxBytes > 0)
+    {
+        this->at_response[rxBytes] = 0;
+        char *result = strstr(this->at_response, "+HTTPREAD");
+        if (*result == NULL)
+        {
+            return -1;
+        }
+
+        sscanf(result, "+HTTPREAD: %d%*s", &read_len);
         if (read_len <= 0)
             return -2;
 
         // calcula o tamanho do read_len em dígitos, para obter o offset do buffer de resposta da UART
-        // não queremos o CONNECT %d\r\n
-        res_len = floor(log10(read_len)) + 1 + 12;
+        // não queremos o +HTTPREAD: %d\r\n
+        res_len = floor(log10(read_len)) + 1 + 20;
         memcpy(buffer, this->at_response + res_len, read_len);
     }
     return read_len;
