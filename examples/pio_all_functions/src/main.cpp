@@ -25,7 +25,7 @@ void updateFromFS(void *vParameters)
     uint8_t buffer[chunk_size];
 
     modem.sendCommand("FS", "AT+FSLS" GSM_NL);
-    modem.sendCommand("FS", "AT+FSOPEN=hook.dat" GSM_NL);
+    modem.sendCommand("FS", "AT+FSOPEN=hook_bin.dat" GSM_NL);
     // modem.sendCommand("FS", "AT+FSATTRI=hook.dat" GSM_NL);
     // modem.sendCommand("FS", "AT+FSREAD=1,100" GSM_NL);
     modem.wait_response(2000);
