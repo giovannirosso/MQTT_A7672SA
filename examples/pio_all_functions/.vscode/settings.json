@@ -1,7 +1,11 @@
 {
+    "idf.port": "/dev/cu.usbserial-A50285BI",
     "files.associations": {
-        "array": "cpp",
+        "*.ejs": "html",
+        "*.tcc": "cpp",
+        "algorithm": "cpp",
         "string": "cpp",
-        "string_view": "cpp"
+        "functional": "cpp",
+        "cmath": "cpp"
     }
 }

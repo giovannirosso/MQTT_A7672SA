@@ -1,5 +1,5 @@
+/*@file MQTT_A7672SA.cpp
 /**
- * @file       MQTT_A7672SA.cpp
  * @author     Giovanni de Rosso Unruh
  * @date       07/2023
  */
@@ -13,6 +13,7 @@ A7672SA::A7672SA()
     this->at_input = false;
     this->at_publish = false;
     this->mqtt_connected = false;
+    this->http_response = false;
 }
 
 A7672SA::A7672SA(gpio_num_t tx_pin, gpio_num_t rx_pin, gpio_num_t en_pin, int32_t baud_rate, uint32_t rx_buffer_size)
@@ -22,6 +23,7 @@ A7672SA::A7672SA(gpio_num_t tx_pin, gpio_num_t rx_pin, gpio_num_t en_pin, int32_
     this->at_input = false;
     this->at_publish = false;
     this->mqtt_connected = false;
+    this->http_response = false;
     this->tx_pin = tx_pin;
     this->rx_pin = rx_pin;
     this->en_pin = en_pin;
@@ -72,29 +74,46 @@ bool A7672SA::begin()
     gpio_set_level(this->en_pin, 0);
     vTaskDelay(5000 / portTICK_PERIOD_MS);
 
-    publish_semaphore = xSemaphoreCreateBinary(); //++ Create FreeRtos Semaphore
+    this->uart_guard = xSemaphoreCreateMutex(); //++ Create FreeRtos Semaphore
 
     uartQueue = xQueueCreate(UART_QUEUE_SIZE, sizeof(commandMessage));
 
-    xTaskCreatePinnedToCore(this->rx_taskImpl, "uart_rx_task", 2048 * 3, this, configMAX_PRIORITIES - 5, NULL, 1); //++ Create FreeRtos Tasks
-    xTaskCreatePinnedToCore(this->tx_taskImpl, "uart_tx_task", 2048 * 2, this, configMAX_PRIORITIES - 6, NULL, 1);
+    xTaskCreatePinnedToCore(this->rx_taskImpl, "uart_rx_task", 1024 * 5, this, configMAX_PRIORITIES - 5, &rxTaskHandle, 1); //++ Create FreeRtos Tasks //todo tamanho da memoria
+    xTaskCreatePinnedToCore(this->tx_taskImpl, "uart_tx_task", 1024 * 5, this, configMAX_PRIORITIES - 5, &txTaskHandle, 1);
 
     ESP_LOGI("BEGIN", "SIMCOMM Started");
     return true;
 }
 
+bool A7672SA::stop()
+{
+    if (this->mqtt_connected)
+    {
+        this->mqtt_disconnect();
+    }
+
+    if (this->at_response != NULL)
+    {
+        free(this->at_response);
+    }
+
+    // uart_driver_delete(UART_NUM_1);
+
+    vTaskDelete(rxTaskHandle);
+    vTaskDelete(txTaskHandle);
+
+    ESP_LOGI("STOP", "SIMCOMM Stopped");
+    return true;
+}
+
 void A7672SA::sendCommand(const char *logName, const char *data)
 {
-    ESP_LOGI(logName, "Sending Command: %s", data);
+    // ESP_LOGI(logName, "Sending Command: %s", data);
     commandMessage message;
     strcpy(message.logName, logName);
     strcpy(message.data, data);
     xQueueSend(uartQueue, &message, portMAX_DELAY);
     // sendCommand(message);
-}
-
-void A7672SA::sendCommand(commandMessage message)
-{
 }
 
 bool A7672SA::receiveCommand(commandMessage *message)
@@ -105,38 +124,6 @@ bool A7672SA::receiveCommand(commandMessage *message)
         return true;
     }
     return false;
-}
-
-void A7672SA::rx_taskImpl(void *pvParameters)
-{
-    static_cast<A7672SA *>(pvParameters)->rx_task();
-}
-
-void A7672SA::rx_task() //++ UART Receive Task
-{
-    static const char *RX_TASK_TAG = "SIM_RX_TASK";
-    esp_log_level_set(RX_TASK_TAG, ESP_LOG_INFO);
-    this->at_response = (char *)malloc(this->rx_buffer_size + 1);
-
-    while (1)
-    {
-        const int rxBytes = uart_read_bytes(UART_NUM_1, this->at_response, this->rx_buffer_size, 250 / portTICK_RATE_MS);
-        if (rxBytes > 0)
-        {
-            this->at_response[rxBytes] = 0;
-            ESP_LOGI(RX_TASK_TAG, "Read %d bytes: '%s'", rxBytes, this->at_response);
-            int n_messages = 0;
-            char **messages = this->simcom_split_messages(this->at_response, &n_messages);
-            for (int i = 0; i < n_messages; i++)
-            {
-                ESP_LOGI(RX_TASK_TAG, "Message %d: '%s'", i, messages[i]);
-                this->simcomm_response_parser(messages[i]);
-                free(messages[i]);
-            }
-            free(messages);
-        }
-    }
-    free(this->at_response);
 }
 
 void A7672SA::tx_taskImpl(void *pvParameters)
@@ -174,8 +161,57 @@ void A7672SA::tx_task()
             send_cmd_to_simcomm(receivedCommand.logName, receivedCommand.data);
         }
 
-        vTaskDelay(5 / portTICK_PERIOD_MS); // todo era 250
+        vTaskDelay(50 / portTICK_PERIOD_MS); // todo era 250 // depois passou para 5 // agr 50
     }
+}
+
+void A7672SA::rx_taskImpl(void *pvParameters)
+{
+    static_cast<A7672SA *>(pvParameters)->rx_task();
+}
+
+void A7672SA::rx_task() //++ UART Receive Task
+{
+    static const char *RX_TASK_TAG = "SIM_RX_TASK";
+    esp_log_level_set(RX_TASK_TAG, ESP_LOG_INFO);
+    this->at_response = (char *)malloc(this->rx_buffer_size + 1);
+
+    while (1)
+    {
+        this->RX_LOCK();
+        const int rxBytes = uart_read_bytes(UART_NUM_1, this->at_response, this->rx_buffer_size, 100 / portTICK_RATE_MS);
+        if (rxBytes > 0)
+        {
+            this->at_response[rxBytes] = 0;
+            ESP_LOGI(RX_TASK_TAG, "Read %d bytes: '%s'", rxBytes, this->at_response);
+            int n_messages = 0;
+            char **messages = this->simcom_split_messages(this->at_response, &n_messages);
+            for (int i = 0; i < n_messages; i++)
+            {
+                ESP_LOGI(RX_TASK_TAG, "Message %d: '%s'", i, messages[i]);
+                this->simcomm_response_parser(messages[i]);
+                free(messages[i]);
+            }
+            free(messages);
+        }
+        this->RX_UNLOCK();
+        vTaskDelay(10 / portTICK_PERIOD_MS);
+    }
+    free(this->at_response);
+}
+
+void A7672SA::RX_LOCK()
+{
+    if (this->uart_guard != NULL)
+        do
+        {
+        } while (xSemaphoreTake(this->uart_guard, portMAX_DELAY) != pdPASS);
+}
+
+void A7672SA::RX_UNLOCK()
+{
+    if (this->uart_guard != NULL)
+        xSemaphoreGive(this->uart_guard);
 }
 
 char **A7672SA::simcom_split_messages(const char *data, int *n_messages)
@@ -187,152 +223,192 @@ char **A7672SA::simcom_split_messages(const char *data, int *n_messages)
     char *token = strtok(data_copy, GSM_NM);
     while (token != NULL)
     {
-        if (token[0] == '\0')
-        { // Ignora tokens vazios
-            token = strtok(NULL, GSM_NM);
-            continue;
+        if (strlen(token) > 0)
+        {
+            messages = (char **)realloc(messages, (*n_messages + 1) * sizeof(char *));
+            messages[*n_messages] = strdup(token);
+            (*n_messages)++;
         }
-
-        messages = (char **)realloc(messages, (*n_messages + 1) * sizeof(char *));
-        messages[*n_messages] = strdup(token);
-        (*n_messages)++;
         token = strtok(NULL, GSM_NM);
     }
     free(data_copy);
     return messages;
 }
 
-void A7672SA::simcomm_response_parser(const char *data) //++ Parser to parse AT Responses from Simcomm
+using ResponseHandler = std::function<void(const char *, const char *)>;
+
+void A7672SA::simcomm_response_parser(const char *data)
 {
+    // Mapa de padrões para funções de callback
+    static const std::vector<std::pair<const char *, ResponseHandler>> response_handlers = {
+        {"CMQTTCONNECT: 0,0" GSM_NL, [this](const char *data, const char *found)
+         {
+             ESP_LOGI("PARSER", "MQTT Connected");
+             this->mqtt_connected = true;
+             mqtt_status status = A7672SA_MQTT_CONNECTED;
+             if (this->on_mqtt_status_ != NULL)
+                 this->on_mqtt_status_(status);
+         }},
+        {"CMQTTSTART: 19" GSM_NL, [this](const char *data, const char *found)
+         {
+             ESP_LOGI("PARSER", "fail to start");
+             this->at_ok = false;
+             this->mqtt_connected = false;
+             mqtt_status status = A7672SA_MQTT_CLIENT_USED;
+             if (this->on_mqtt_status_ != NULL)
+                 this->on_mqtt_status_(status);
+             this->mqtt_release_client();
+         }},
+        {"CFUN: 1" GSM_NL, [this](const char *data, const char *found)
+         {
+             ESP_LOGI("PARSER", "CFUN: 1");
+             this->at_ready = true;
+         }},
+        {"CMQTTPUB: 0,0" GSM_NL, [this](const char *data, const char *found)
+         {
+             ESP_LOGI("PARSER", "Publish OK");
+             this->at_publish = true;
+         }},
+        {"CMQTTSUB: 0,0" GSM_NL, [this](const char *data, const char *found)
+         {
+             ESP_LOGI("PARSER", "Subscribe OK");
+         }},
+        {GSM_NL ">", [this](const char *data, const char *found)
+         {
+             ESP_LOGI("PARSER", "AT Input");
+             this->at_input = true;
+         }},
+        {GSM_NL "DOWNLOAD", [this](const char *data, const char *found)
+         {
+             ESP_LOGI("PARSER", "AT Input");
+             this->at_input = true;
+         }},
+        {GSM_ERROR, [this](const char *data, const char *found)
+         {
+             ESP_LOGI("PARSER", "AT ERROR");
+             this->at_error = true;
+             this->at_ok = false;
+             this->at_input = false;
+             this->at_publish = false;
+             this->http_response = false;
+         }},
+        {"CME ERROR:", [this](const char *data, const char *found)
+         {
+             ESP_LOGI("PARSER", "AT ERROR");
+             this->at_error = true;
+             this->at_ok = false;
+             this->at_input = false;
+             this->at_publish = false;
+             this->http_response = false;
+         }},
+        {"CMQTTRECV:", [this](const char *data, const char *found)
+         {
+             String payloadString(data);
+             int currentIndex = 0;
+             int mqttRecvIndex = payloadString.indexOf("CMQTTRECV:", currentIndex);
+
+             while (mqttRecvIndex != -1)
+             {
+                 currentIndex = mqttRecvIndex;
+                 int firstCommaIndex = payloadString.indexOf(',', currentIndex);
+                 int secondCommaIndex = payloadString.indexOf(',', firstCommaIndex + 1);
+                 int thirdCommaIndex = payloadString.indexOf(',', secondCommaIndex + 1);
+
+                 String topic = payloadString.substring(firstCommaIndex + 2, secondCommaIndex - 1).c_str();
+                 topic.trim();
+                 int messageLength = payloadString.substring(secondCommaIndex + 1, thirdCommaIndex).toInt();
+
+                 String payload = payloadString.substring(thirdCommaIndex + 2, thirdCommaIndex + 2 + messageLength);
+
+                 mqtt_message message;
+                 message.topic = (char *)malloc(topic.length() + 1);
+                 strcpy(message.topic, topic.c_str());
+                 message.length = messageLength;
+                 message.payload = new uint8_t[messageLength];
+                 memcpy(message.payload, payload.c_str(), messageLength);
+
+                 if (this->on_message_callback_ != nullptr)
+                 {
+                     this->on_message_callback_(message);
+                 }
+
+                 free(message.topic);
+                 delete[] message.payload;
+
+                 mqttRecvIndex = payloadString.indexOf("CMQTTRECV:", currentIndex + 1);
+             }
+         }},
+        {"CMQTTCONNLOST:", [this](const char *data, const char *found)
+         {
+             ESP_LOGI("PARSER", "MQTT Disconnected");
+             mqtt_status status = A7672SA_MQTT_DISCONNECTED;
+             this->mqtt_connected = false;
+             if (this->on_mqtt_status_ != NULL)
+                 this->on_mqtt_status_(status);
+             this->mqtt_disconnect();
+         }},
+        {"CMQTTDISC:", [this](const char *data, const char *found)
+         {
+             ESP_LOGI("PARSER", "MQTT Disconnected");
+             mqtt_status status = A7672SA_MQTT_DISCONNECTED;
+             this->mqtt_connected = false;
+             if (this->on_mqtt_status_ != NULL)
+                 this->on_mqtt_status_(status);
+             this->mqtt_disconnect();
+         }},
+        {GSM_NL "PB DONE", [this](const char *data, const char *found)
+         {
+             ESP_LOGI("PARSER", "PB DONE");
+         }},
+        {"HTTPACTION:", [this](const char *data, const char *found)
+         {
+             int method, errcode, datalen;
+             sscanf(found, "HTTPACTION: %d,%d,%d" GSM_NL, &method, &this->http_response_data.http_status_code, &this->http_response_data.http_content_size);
+             ESP_LOGI("PARSER", "METHOD: %d, ERRORCODE: %d, DATALEN: %d", method, this->http_response_data.http_status_code, this->http_response_data.http_content_size);
+             this->http_response = true;
+         }},
+        {"HTTPPOSTFILE:", [this](const char *data, const char *found)
+         {
+             int method;
+             sscanf(found, "HTTPPOSTFILE: %d,%d,%d" GSM_NL, &method, &this->http_response_data.http_status_code, &this->http_response_data.http_content_size);
+             ESP_LOGI("PARSER", "METHOD: %d, ERRORCODE: %d, DATALEN: %d", method, this->http_response_data.http_status_code, this->http_response_data.http_content_size);
+             this->http_response = true;
+         }},
+        {"HTTPHEAD:", [this](const char *data, const char *found)
+         {
+             sscanf(found, "HTTPHEAD: %d" GSM_NL, &this->http_response_data.http_header_size);
+             ESP_LOGI("PARSER", "HEADLEN: %d", this->http_response_data.http_header_size);
+             found = strstr(found, "Content-Length:");
+             sscanf(found, "Content-Length: %d%*s", &this->http_response_data.http_content_size);
+             ESP_LOGI("PARSER", "CONTENT_LENGTH: %d", this->http_response_data.http_content_size);
+             found = strstr(found, "etag:");
+             sscanf(found, "etag: %s" GSM_NL "%*s", this->http_response_data.http_etag);
+             ESP_LOGI("PARSER", "ETAG: %s", this->http_response_data.http_etag);
+             this->http_response = true;
+         }},
+        {GSM_OK, [this](const char *data, const char *found)
+         {
+             ESP_LOGI("PARSER", "AT Successful");
+             this->at_ok = true;
+         }},
+    };
+
     if (strcmp(data, GSM_NL) == 0)
     {
         return;
     }
-    else if (strstr(data, "CMQTTCONNECT: 0,0" GSM_NL))
-    {
-        ESP_LOGI("PARSER", "MQTT Connected");
-        this->mqtt_connected = true;
 
-        mqtt_status status = A7672SA_MQTT_CONNECTED;
-        xSemaphoreGive(publish_semaphore);
-
-        if (this->on_mqtt_status_ != NULL)
-            this->on_mqtt_status_(status);
-    }
-    else if (strstr(data, "CMQTTSTART: 19" GSM_NL))
+    for (const auto &handler : response_handlers)
     {
-        ESP_LOGI("PARSER", "fail to start");
-        this->at_ok = false;
-        this->mqtt_connected = false;
-
-        mqtt_status status = A7672SA_MQTT_CLIENT_USED;
-
-        if (this->on_mqtt_status_ != NULL)
-            this->on_mqtt_status_(status);
-
-        this->mqtt_release_client();
-    }
-    else if (strstr(data, "CFUN: 1" GSM_NL)) // ++ AT Response for *ATREADY: 1
-    {
-        ESP_LOGI("PARSER", "CFUN: 1");
-        this->at_ready = true;
-        xSemaphoreGive(publish_semaphore);
-    }
-    else if (strstr(data, "CMQTTPUB: 0,0" GSM_NL))
-    {
-        ESP_LOGI("PARSER", "Publish OK");
-        this->at_publish = true;
-        xSemaphoreGive(publish_semaphore);
-    }
-    else if (strstr(data, "CMQTTSUB: 0,0" GSM_NL))
-    {
-        ESP_LOGI("PARSER", "Subscribe OK");
-        xSemaphoreGive(publish_semaphore);
-    }
-    else if (strstr(data, GSM_OK)) //++ AT Response for OK
-    {
-        ESP_LOGI("PARSER", "AT Successful");
-        this->at_ok = true;
-        xSemaphoreGive(publish_semaphore);
-    }
-    else if (strstr(data, GSM_NL ">"))
-    {
-        ESP_LOGI("PARSER", "AT Input");
-        this->at_input = true;
-        xSemaphoreGive(publish_semaphore);
-    }
-    else if (strstr(data, GSM_ERROR) || strstr(data, "CME ERROR:")) //++ AT Response for ERROR
-    {
-        ESP_LOGI("PARSER", "AT ERROR");
-        this->at_error = true;
-        this->at_ok = false;
-        this->at_input = false;
-        this->at_publish = false;
-        xSemaphoreGive(publish_semaphore);
-    }
-    else if (strstr(data, "CMQTTRECV:"))
-    {
-        String payloadString(data);
-
-        int currentIndex = 0;
-        int mqttRecvIndex = payloadString.indexOf("CMQTTRECV:", currentIndex);
-
-        while (mqttRecvIndex != -1)
+        const char *found = strstr(data, handler.first);
+        if (found != nullptr)
         {
-            currentIndex = mqttRecvIndex;
-
-            int firstCommaIndex = payloadString.indexOf(',', currentIndex);
-            int secondCommaIndex = payloadString.indexOf(',', firstCommaIndex + 1);
-            int thirdCommaIndex = payloadString.indexOf(',', secondCommaIndex + 1);
-
-            String topic = payloadString.substring(firstCommaIndex + 2, secondCommaIndex - 1).c_str();
-            topic.trim();
-            int messageLength = payloadString.substring(secondCommaIndex + 1, thirdCommaIndex).toInt();
-
-            String payload = payloadString.substring(thirdCommaIndex + 2, thirdCommaIndex + 2 + messageLength);
-
-            mqtt_message message;
-            message.topic = (char *)malloc(topic.length() + 1);
-            strcpy(message.topic, topic.c_str());
-            message.length = messageLength;
-            message.payload = new uint8_t[messageLength];
-            memcpy(message.payload, payload.c_str(), messageLength);
-
-            if (this->on_message_callback_ != nullptr)
-            {
-                this->on_message_callback_(message);
-            }
-
-            free(message.topic);
-            delete[] message.payload;
-
-            // Move to the next potential "+CMQTTRECV:" message in the buffer
-            mqttRecvIndex = payloadString.indexOf("CMQTTRECV:", currentIndex + 1);
+            handler.second(data, found);
+            return;
         }
     }
-    else if (strstr(data, "CMQTTCONNLOST:") || strstr(data, "CMQTTDISC:"))
-    {
-        ESP_LOGI("PARSER", "MQTT Disconnected");
 
-        mqtt_status status = A7672SA_MQTT_DISCONNECTED;
-
-        this->mqtt_connected = false;
-
-        if (this->on_mqtt_status_ != NULL)
-            this->on_mqtt_status_(status);
-
-        this->mqtt_disconnect();
-    }
-    else if (strstr(data, GSM_NL "PB DONE"))
-    {
-        ESP_LOGI("PARSER", "PB DONE");
-        xSemaphoreGive(publish_semaphore);
-    }
-    else
-    {
-        ESP_LOGI("PARSER", "Unhandeled AT Response %s", data);
-        // xSemaphoreGive(publish_semaphore);
-    }
+    ESP_LOGI("PARSER", "Unhandled AT Response %s", data); //++ Unhandled AT Response
 }
 
 bool A7672SA::restart(uint32_t timeout)
@@ -343,20 +419,18 @@ bool A7672SA::restart(uint32_t timeout)
 
 int A7672SA::send_cmd_to_simcomm(const char *logName, byte *data, int len) //++ Sending AT Commands to Simcomm via UART
 {
-    xSemaphoreTake(publish_semaphore, 5000 / portTICK_PERIOD_MS);
     const int txBytes = uart_write_bytes(UART_NUM_1, data, len);
-    ESP_LOGI(logName, "Wrote %d bytes of %d requested", txBytes, len);
-    ESP_LOGI(logName, "Wrote %s", data);
+    // ESP_LOGI(logName, "Wrote %d bytes of %d requested", txBytes, len);
+    // ESP_LOGI(logName, "Wrote %s", data);
     return txBytes;
 }
 
 int A7672SA::send_cmd_to_simcomm(const char *logName, const char *data) //++ Sending AT Commands to Simcomm via UART
 {
-    xSemaphoreTake(publish_semaphore, 5000 / portTICK_PERIOD_MS);
     const int len = strlen(data);
     const int txBytes = uart_write_bytes(UART_NUM_1, data, len);
-    ESP_LOGI(logName, "Wrote %d bytes of %d requested", txBytes, len);
-    ESP_LOGI(logName, "Wrote %s", data);
+    // ESP_LOGI(logName, "Wrote %d bytes of %d requested", txBytes, len);
+    // ESP_LOGI(logName, "Wrote %s", data);
     return txBytes;
 }
 
@@ -366,6 +440,7 @@ bool A7672SA::wait_response(uint32_t timeout)
     this->at_ok = false;
     this->at_publish = false;
     this->at_error = false;
+    this->http_response = false;
     uint32_t start = millis();
     while (!this->at_ok && !this->at_error && millis() - start < timeout)
     {
@@ -385,6 +460,7 @@ bool A7672SA::wait_input(uint32_t timeout)
     this->at_ok = false;
     this->at_publish = false;
     this->at_error = false;
+    this->http_response = false;
     uint32_t start = millis();
     while (!this->at_input && !this->at_error && millis() - start < timeout)
     {
@@ -404,6 +480,7 @@ bool A7672SA::wait_publish(uint32_t timeout)
     this->at_ok = false;
     this->at_publish = false;
     this->at_error = false;
+    this->http_response = false;
     uint32_t start = millis();
     while (!this->at_publish && !this->at_error && millis() - start < timeout)
     {
@@ -419,6 +496,12 @@ bool A7672SA::wait_publish(uint32_t timeout)
 
 bool A7672SA::wait_to_connect(uint32_t timeout)
 {
+    this->at_input = false;
+    this->at_ok = false;
+    this->at_publish = false;
+    this->at_error = false;
+    this->http_response = false;
+    this->mqtt_connected = false;
     uint32_t start = millis();
     while (!this->mqtt_connected && millis() - start < timeout)
     {
@@ -430,6 +513,26 @@ bool A7672SA::wait_to_connect(uint32_t timeout)
         }
     }
     return this->mqtt_connected;
+}
+
+bool A7672SA::wait_http_response(uint32_t timeout)
+{
+    this->at_input = false;
+    this->at_ok = false;
+    this->at_publish = false;
+    this->at_error = false;
+    this->http_response = false;
+    uint32_t start = millis();
+    while (!this->http_response && millis() - start < timeout)
+    {
+        const int rxBytes = uart_read_bytes(UART_NUM_1, this->at_response, this->rx_buffer_size, 250 / portTICK_RATE_MS);
+        if (rxBytes > 0)
+        {
+            this->at_response[rxBytes] = 0;
+            this->simcomm_response_parser(this->at_response); //++ Call the AT Response Parser Function
+        }
+    }
+    return this->http_response;
 }
 
 bool A7672SA::test_at(uint32_t timeout)
@@ -707,7 +810,6 @@ bool A7672SA::set_ca_cert(const char *ca_cert, const char *ca_name, size_t cert_
     this->sendCommand("SET_CA_CERT", data);
     if (this->wait_input(timeout))
     {
-        xSemaphoreTake(publish_semaphore, 5000 / portTICK_PERIOD_MS);
         int tx_bytes = uart_write_bytes(UART_NUM_1, ca_cert, cert_size);
         ESP_LOGI("SET_CA_CERT", "Wrote %d bytes", tx_bytes);
         return this->wait_response(timeout);
@@ -743,8 +845,6 @@ bool A7672SA::mqtt_connect(const char *host, uint16_t port, const char *clientId
                     if (this->wait_response(timeout))
                         this->sendCommand("MQTT_CONNECT", "AT+CMQTTCFG=\"argtopic\",0,1,1" GSM_NL);
                     if (this->wait_response(timeout))
-                        this->sendCommand("MQTT_CONNECT", "AT+CMQTTCFG=\"argtopic\",0,1,1" GSM_NL);
-                    if (this->wait_response(timeout))
                     {
                         const size_t data_size = strlen(host) + strlen(username) + strlen(password) + 50;
                         char data[data_size];
@@ -773,7 +873,7 @@ bool A7672SA::mqtt_connect(const char *host, uint16_t port, const char *clientId
             sprintf(cmd, "AT+CMQTTACCQ=0,\"%s\"" GSM_NL, clientId);
             this->sendCommand("MQTT_CONNECT", cmd);
             if (this->wait_response(timeout))
-                this->sendCommand("MQTT_CONNECT", "AT+CMQTTCFG=\"argtopic\",0,1,1" GSM_NL);
+                this->sendCommand("MQTT_CONNECT", "AT+CMQTTCFG=\"checkUTF8\",0,0" GSM_NL);
             if (this->wait_response(timeout))
                 this->sendCommand("MQTT_CONNECT", "AT+CMQTTCFG=\"argtopic\",0,1,1" GSM_NL);
             if (this->wait_response(timeout))
@@ -855,7 +955,6 @@ bool A7672SA::mqtt_subscribe_topics(const char *topic[10], int n_topics, uint16_
         this->sendCommand("MQTT_SUBSCRIBE", data_string);
         if (this->wait_input(timeout))
         {
-            xSemaphoreTake(publish_semaphore, 5000 / portTICK_PERIOD_MS);
             int tx_bytes = uart_write_bytes(UART_NUM_1, topic[i], strlen(topic[i]));
             ESP_LOGI("MQTT_SUBSCRIBE", "Wrote %d bytes", tx_bytes);
             this->wait_response(timeout);
@@ -888,4 +987,340 @@ bool A7672SA::mqtt_release_client(uint32_t timeout)
 {
     this->sendCommand("MQTT_RELEASE_CLIENT", "AT+CMQTTREL=0" GSM_NL);
     return this->wait_response(timeout);
+}
+
+uint32_t A7672SA::http_request(const char *url, HTTP_METHOD method, bool save_to_fs, bool ssl, const char *ca_name,
+                               const char *user_data, size_t user_data_size, uint32_t con_timeout, uint32_t recv_timeout, const char *content,
+                               const char *accept, uint8_t read_mode, const char *data_post, size_t size, uint32_t timeout)
+{
+    this->sendCommand("HTTP_INIT", "AT+HTTPINIT" GSM_NL);
+    if (this->wait_response(timeout))
+    {
+        char cmd[100];
+        sprintf(cmd, "AT+HTTPPARA=\"URL\",\"%s\"" GSM_NL, url);
+        this->sendCommand("HTTP_REQUEST", cmd);
+        this->wait_response(timeout);
+
+        if (ssl)
+        {
+            this->sendCommand("HTTP_SSL", "AT+CSSLCFG=\"sslversion\",0,4" GSM_NL);
+            if (this->wait_response(timeout))
+                this->sendCommand("HTTP_SSL", "AT+CSSLCFG=\"authmode\",0,1" GSM_NL);
+            if (this->wait_response(timeout))
+                this->sendCommand("HTTP_SSL", "AT+CSSLCFG=\"enableSNI\",0,0" GSM_NL);
+            if (this->wait_response(timeout))
+            {
+                sprintf(cmd, "AT+CSSLCFG=\"cacert\",0,\"%s\"" GSM_NL, ca_name);
+                this->sendCommand("MQTT_CONNECT", cmd);
+                this->wait_response(timeout);
+                this->sendCommand("HTTP_SSL", "AT+HTTPPARA=\"SSLCFG\",0" GSM_NL);
+                this->wait_response(timeout);
+            }
+        }
+
+        sprintf(cmd, "AT+HTTPPARA=\"CONNECTTO\",%d" GSM_NL, con_timeout);
+        this->sendCommand("HTTP_REQUEST", cmd);
+        this->wait_response(timeout);
+        sprintf(cmd, "AT+HTTPPARA=\"RECVTO\",%d" GSM_NL, recv_timeout);
+        this->sendCommand("HTTP_REQUEST", cmd);
+        this->wait_response(timeout);
+        sprintf(cmd, "AT+HTTPPARA=\"CONTENT\",\"%s\"" GSM_NL, content);
+        this->sendCommand("HTTP_REQUEST", cmd);
+        this->wait_response(timeout);
+        sprintf(cmd, "AT+HTTPPARA=\"ACCEPT\",\"%s\"" GSM_NL, accept);
+        this->sendCommand("HTTP_REQUEST", cmd);
+        this->wait_response(timeout);
+
+        if (user_data_size > 0)
+        {
+            char data_[user_data_size + 40];
+            sprintf(data_, "AT+HTTPPARA=\"USERDATA\",\"%s\"" GSM_NL, user_data);
+            this->sendCommand("HTTP_REQUEST", data_);
+            this->wait_response(timeout);
+        }
+
+        sprintf(cmd, "AT+HTTPPARA=\"READMODE\",%d" GSM_NL, read_mode);
+        this->sendCommand("HTTP_REQUEST", cmd);
+        if (this->wait_response(timeout))
+        {
+            if (method == HTTP_METHOD::POST)
+            {
+                sprintf(cmd, "AT+HTTPDATA=%d,%d" GSM_NL, size, timeout);
+                this->sendCommand("HTTP_REQUEST", cmd);
+                if (this->wait_input(timeout))
+                {
+                    this->send_cmd_to_simcomm("HTTP_REQUEST", (byte *)data_post, size);
+                    if (this->wait_response(timeout))
+                    {
+                        return this->http_response_data.http_status_code;
+                    }
+                }
+            }
+
+            sprintf(cmd, "AT+HTTPACTION=%d" GSM_NL, method);
+            this->sendCommand("HTTP_REQUEST", cmd);
+            if (this->wait_http_response(recv_timeout * 1000))
+            {
+                this->sendCommand("HTTP_REQUEST", "AT+HTTPHEAD" GSM_NL);
+                this->wait_http_response(timeout);
+
+                if (save_to_fs)
+                {
+                    this->http_save_response(ssl);
+                    this->wait_response(timeout);
+                }
+
+                return this->http_response_data.http_status_code;
+            }
+        }
+    }
+    return 0;
+}
+
+bool A7672SA::http_request_file(const char *url, HTTP_METHOD method, const char *filename, bool ssl, const char *ca_name,
+                                const char *user_data, size_t user_data_size, uint32_t con_timeout, uint32_t recv_timeout,
+                                const char *content, const char *accept, uint8_t read_mode, const char *data_post, size_t size, uint32_t timeout)
+{
+    char cmd[100];
+    sprintf(cmd, "AT+FSOPEN=C:/%s,0" GSM_NL, filename);
+    this->sendCommand("FS", cmd);
+    this->wait_response(timeout);
+    this->sendCommand("FS", "AT+FSCLOSE=1" GSM_NL);
+    this->wait_response(timeout);
+    this->sendCommand("HTTP_INIT", "AT+HTTPINIT" GSM_NL);
+    if (this->wait_response(timeout))
+    {
+        sprintf(cmd, "AT+HTTPPARA=\"URL\",\"%s\"" GSM_NL, url);
+        this->sendCommand("HTTP_REQUEST", cmd);
+        this->wait_response(timeout);
+
+        if (ssl)
+        {
+            this->sendCommand("HTTP_SSL", "AT+CSSLCFG=\"sslversion\",0,4" GSM_NL);
+            if (this->wait_response(timeout))
+                this->sendCommand("HTTP_SSL", "AT+CSSLCFG=\"authmode\",0,1" GSM_NL);
+            if (this->wait_response(timeout))
+                this->sendCommand("HTTP_SSL", "AT+CSSLCFG=\"enableSNI\",0,0" GSM_NL);
+            if (this->wait_response(timeout))
+            {
+                sprintf(cmd, "AT+CSSLCFG=\"cacert\",0,\"%s\"" GSM_NL, ca_name);
+                this->sendCommand("MQTT_CONNECT", cmd);
+                this->wait_response(timeout);
+                this->sendCommand("HTTP_SSL", "AT+HTTPPARA=\"SSLCFG\",0" GSM_NL);
+                this->wait_response(timeout);
+            }
+        }
+
+        sprintf(cmd, "AT+HTTPPARA=\"CONNECTTO\",%d" GSM_NL, con_timeout);
+        this->sendCommand("HTTP_REQUEST", cmd);
+        this->wait_response(timeout);
+        sprintf(cmd, "AT+HTTPPARA=\"RECVTO\",%d" GSM_NL, recv_timeout);
+        this->sendCommand("HTTP_REQUEST", cmd);
+        this->wait_response(timeout);
+        sprintf(cmd, "AT+HTTPPARA=\"CONTENT\",\"%s\"" GSM_NL, content);
+        this->sendCommand("HTTP_REQUEST", cmd);
+        this->wait_response(timeout);
+        sprintf(cmd, "AT+HTTPPARA=\"ACCEPT\",\"%s\"" GSM_NL, accept);
+        this->sendCommand("HTTP_REQUEST", cmd);
+        this->wait_response(timeout);
+
+        if (user_data_size > 0)
+        {
+            char data_[user_data_size + 40];
+            sprintf(data_, "AT+HTTPPARA=\"USERDATA\",\"%s\"" GSM_NL, user_data);
+            this->sendCommand("HTTP_REQUEST", data_);
+            this->wait_response(timeout);
+        }
+
+        sprintf(cmd, "AT+HTTPPARA=\"READMODE\",%d" GSM_NL, read_mode);
+        this->sendCommand("HTTP_REQUEST", cmd);
+        if (this->wait_response(timeout))
+        {
+            if (method == HTTP_METHOD::POST)
+            {
+                sprintf(cmd, "AT+HTTPDATA=%d,%d" GSM_NL, size, timeout);
+                this->sendCommand("HTTP_REQUEST", cmd);
+                if (this->wait_input(timeout))
+                {
+                    this->send_cmd_to_simcomm("HTTP_REQUEST", (byte *)data_post, size);
+                    if (this->wait_response(timeout))
+                    {
+                        return true;
+                    }
+                }
+            }
+
+            sprintf(cmd, "AT+HTTPPOSTFILE=\"%s\",1,%d,1" GSM_NL, filename, method);
+            this->sendCommand("HTTP_REQUEST", cmd);
+            if (this->wait_http_response(recv_timeout * 1000))
+            {
+                this->sendCommand("HTTP_REQUEST", "AT+HTTPHEAD" GSM_NL);
+                this->wait_http_response(timeout);
+
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
+uint32_t A7672SA::http_response_size()
+{
+    return this->http_response_data.http_content_size;
+}
+
+uint32_t A7672SA::http_response_header_size()
+{
+    return this->http_response_data.http_header_size;
+}
+
+char *A7672SA::http_response_etag()
+{
+    return this->http_response_data.http_etag;
+}
+
+// para que o buffer seja preenchido é necessário que que a tarefa que chama essa função pegue o mutex uart_guard
+size_t A7672SA::fs_read(size_t read_size, uint8_t *buffer, uint32_t timeout)
+{
+    int read_len = 0;
+    int res_len = 0;
+
+    char cmd[100];
+    sprintf(cmd, "AT+FSREAD=1,%d" GSM_NL, read_size);
+
+    this->sendCommand("FS", cmd);
+    const int rxBytes = uart_read_bytes(UART_NUM_1, this->at_response, this->rx_buffer_size, 250 / portTICK_RATE_MS);
+
+    if (rxBytes > 0)
+    {
+        this->at_response[rxBytes] = 0;
+
+        char *result = strstr(this->at_response, "CONNECT");
+        if (*result == NULL)
+        {
+            return -1;
+        }
+
+        sscanf(result, "CONNECT %d%*s", &read_len);
+        if (read_len <= 0)
+        {
+            return -2;
+        }
+        // calcula o tamanho do read_len em dígitos, para obter o offset do buffer de resposta da UART
+        // não queremos o CONNECT %d\r\n
+        res_len = floor(log10(read_len)) + 1 + 12;
+        memcpy(buffer, this->at_response + res_len, read_len);
+    }
+
+    return read_len;
+}
+
+size_t A7672SA::http_read_response(uint8_t *buffer, size_t read_size, size_t offset, uint32_t timeout)
+{
+    uint32_t start = millis();
+
+    int read_len = 0;
+    int res_len = 0;
+
+    char cmd[100];
+    sprintf(cmd, "AT+HTTPREAD=%d,%d" GSM_NL, offset, read_size);
+
+    this->sendCommand("HTTP", cmd);
+    const int rxBytes = uart_read_bytes(UART_NUM_1, this->at_response, this->rx_buffer_size, 250 / portTICK_RATE_MS);
+
+    if (rxBytes > 0)
+    {
+        this->at_response[rxBytes] = 0;
+        char *result = strstr(this->at_response, "+HTTPREAD");
+        if (*result == NULL)
+        {
+            return -1;
+        }
+
+        sscanf(result, "+HTTPREAD: %d%*s", &read_len);
+        if (read_len <= 0)
+            return -2;
+
+        // calcula o tamanho do read_len em dígitos, para obter o offset do buffer de resposta da UART
+        // não queremos o +HTTPREAD: %d\r\n
+        res_len = floor(log10(read_len)) + 1 + 20;
+        memcpy(buffer, this->at_response + res_len, read_len);
+    }
+    return read_len;
+}
+
+void A7672SA::http_read_file(const char *filename, uint32_t timeout)
+{
+    char cmd[100];
+    sprintf(cmd, "AT+HTTPREADFILE=\"%s\"" GSM_NL, filename);
+    this->sendCommand("HTTP_REQUEST", cmd);
+    this->wait_response(timeout);
+}
+
+void A7672SA::http_save_response(bool https)
+{
+    if (https)
+        this->sendCommand("FS", "AT+FSCOPY=C:/https_body.dat,http_res.dat" GSM_NL); // C:/
+    else
+        this->sendCommand("FS", "AT+FSCOPY=C:/http_body.dat,http_res.dat" GSM_NL); // C:/
+    this->wait_response();
+}
+
+bool A7672SA::http_term(uint32_t timeout)
+{
+    this->sendCommand("HTTP_TERM", "AT+HTTPTERM" GSM_NL);
+    return this->wait_response(timeout);
+}
+
+bool A7672SA::fs_open(const char *filename, uint16_t mode, uint32_t timeout)
+{
+    char cmd[100];
+    sprintf(cmd, "AT+FSOPEN=C:/%s,%d" GSM_NL, filename, mode);
+    this->sendCommand("FS_OPEN", cmd);
+    return this->wait_response(timeout);
+}
+
+bool A7672SA::fs_close(uint32_t timeout)
+{
+    this->sendCommand("FS_CLOSE", "AT+FSCLOSE=1" GSM_NL);
+    return this->wait_response(timeout);
+}
+
+bool A7672SA::fs_delete(const char *filename, uint32_t timeout)
+{
+    char cmd[100];
+    sprintf(cmd, "AT+FSDEL=%s" GSM_NL, filename);
+    this->sendCommand("FS_DELETE", cmd);
+    return this->wait_response(timeout);
+}
+
+uint32_t A7672SA::fs_size(const char *filename, uint32_t timeout)
+{
+    char cmd[100];
+    sprintf(cmd, "AT+FSATTRI=C:/%s" GSM_NL, filename);
+    this->sendCommand("FS_LENGTH", cmd);
+    if (this->wait_response(timeout))
+    {
+        // example: +FSATTRI: 8604
+        String data_string = "";
+        String length = "";
+
+        for (int j = 0; j < strlen(this->at_response); j++)
+        {
+            data_string += this->at_response[j];
+        }
+
+        data_string.trim();
+
+        length = data_string.substring(data_string.indexOf(":") + 1, data_string.indexOf("\n") - 1);
+
+        return length.toInt();
+    }
+    return 0;
+}
+
+void A7672SA::fs_list_files(uint32_t timeout)
+{
+    this->sendCommand("FS_LIST", "AT+FSLS" GSM_NL);
+    this->wait_response(timeout);
 }

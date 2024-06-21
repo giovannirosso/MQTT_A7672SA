@@ -11,6 +11,9 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#include <vector>
+#include <functional>
+#include <string>
 
 #include "esp_system.h"
 #include "esp_log.h"
@@ -47,7 +50,15 @@ struct mqtt_message
 struct commandMessage
 {
     char logName[48];
-    char data[256];
+    char data[1024]; // todo 1024
+};
+
+struct http_response
+{
+    uint16_t http_status_code;
+    size_t http_header_size;
+    size_t http_content_size;
+    char http_etag[32];
 };
 
 enum registration_status
@@ -70,17 +81,31 @@ enum mqtt_status // todo:
     A7672SA_MQTT_DISCONNECTED = 3
 };
 
+enum HTTP_METHOD
+{
+    GET = 0,
+    POST = 1,
+    HEAD = 2,
+    DELETE = 3,
+    PUT = 4
+};
+
 class A7672SA
 {
 private:
-    SemaphoreHandle_t publish_semaphore;
     QueueHandle_t uartQueue;
+    TaskHandle_t rxTaskHandle;
+    TaskHandle_t txTaskHandle;
+    SemaphoreHandle_t uart_guard;
 
     gpio_num_t tx_pin;
     gpio_num_t rx_pin;
     gpio_num_t en_pin;
 
     bool mqtt_connected;
+    bool http_response;
+
+    struct http_response http_response_data = {0, 0, 0, ""};
 
     bool at_ok;
     bool at_error;
@@ -98,8 +123,9 @@ private:
     void tx_task();
     static void tx_taskImpl(void *pvParameters);
 
-    void sendCommand(const char *log, const char *data);
-    void sendCommand(commandMessage message);
+    int send_cmd_to_simcomm(const char *logName, const char *data);
+    int send_cmd_to_simcomm(const char *logName, byte *data, int len);
+
     bool receiveCommand(commandMessage *message);
 
     void simcomm_response_parser(const char *data);
@@ -107,8 +133,11 @@ private:
 
 public:
     A7672SA();
-    A7672SA(gpio_num_t tx_pin, gpio_num_t rx_pin, gpio_num_t en_pin, int32_t baud_rate = 115200, uint32_t rx_buffer_size = 1024);
+    A7672SA(gpio_num_t tx_pin, gpio_num_t rx_pin, gpio_num_t en_pin, int32_t baud_rate = 115200, uint32_t rx_buffer_size = 10240);
     ~A7672SA();
+
+    void RX_LOCK();
+    void RX_UNLOCK();
 
     void on_message_callback(void (*callback)(mqtt_message &message))
     {
@@ -120,16 +149,18 @@ public:
         on_mqtt_status_ = callback;
     }
 
-    int send_cmd_to_simcomm(const char *logName, const char *data);
-    int send_cmd_to_simcomm(const char *logName, byte *data, int len);
+    void sendCommand(const char *log, const char *data);
 
     bool wait_input(uint32_t timeout = 2000);
     bool wait_publish(uint32_t timeout = 2000);
     bool wait_network(uint32_t timeout = 10000);
     bool wait_response(uint32_t timeout = 2000);
     bool wait_to_connect(uint32_t timeout = 10000);
+    bool wait_http_response(uint32_t timeout = 10000);
+    bool wait_read(size_t len, uint32_t timeout = 120000);
 
     bool begin();
+    bool stop();
     bool is_ready();
     bool restart(uint32_t timeout = 1000);
     bool test_at(uint32_t timeout = 1000);
@@ -153,6 +184,54 @@ public:
     bool mqtt_subscribe_topics(const char *topic[10], int n_topics = 10, uint16_t qos = 0, uint32_t timeout = 1000);
     bool mqtt_subscribe(const char *topic, uint16_t qos, uint32_t timeout = 1000);
     bool mqtt_is_connected();
+
+    /*
+    <url> URL of network resource.String,start with "http://" or"https://" a)http://’server’ :’tcpPort’ /’path’. b)https://’server’ :’tcpPort’ /’path’. "server" DNS domain name or IP address "path" path to a file or directory of a server "tcpPort" http default value is 80,https default value is 443.(canbeomitted)
+    <method> HTTP request method, enum HTTP_METHOD, range is 0-4. 0: GET, 1: POST, 2: HEAD 3: DELETE, 4: PUT.
+    <save_to_fs> Whether to save the response content to file system, Boolean type. false: not save, true: save. Default is false.
+    <ssl> Whether to use SSL, Boolean type. false: no SSL, true: use SSL. Default is false.
+    <ca_name> The name of the CA certificate uploaded to simcom, String type, default is "ca.pem".
+    <user_data> The customized HTTP header information. String type, max lengthis 256.
+    <user_data_size> The size of user_data, Numeric type, range is 0-256, default is 0.
+    <conn_timeout> Timeout for accessing server, Numeric type, range is 20-120s, default is 120s.
+    <recv_timeout> Timeout for receiving data from server, Numeric type range is 2s-120s, default is 20s.
+    <content_type> This is for HTTP "Content-Type" tag, String type, max length is 256, and default is "text/plain".
+    <accept-type> This is for HTTP "Accept-type" tag, String type, max length is 256, and default is "".
+    <sslcfg_id> This is setting SSL context id, Numeric type, range is 0-9. Default is0.Please refer to Chapter 19 of this document.
+    <data_post> Data to be sent to server, String type. Default is "".
+    <size> The size of data to be sent to server, Numeric type. Default is 0.
+    <readmode> For HTTPREAD, Numeric type, it can be set to 0 or 1. If set to1, youcan read the response content data from the same position repeatly. The limit is that the size of HTTP server response content shouldbeshorter than 1M.Default is 0.
+    */
+    uint32_t http_request(const char *url, HTTP_METHOD method, bool save_to_fs = false, bool ssl = false, const char *ca_name = "ca.pem",
+                          const char *user_data = "", size_t user_data_size = 0, uint32_t con_timeout = 120, uint32_t recv_timeout = 120,
+                          const char *content = "text/plain", const char *accept = "*/*", uint8_t read_mode = 0, const char *data_post = "", size_t size = 0, uint32_t timeout = 30000);
+
+    bool http_request_file(const char *url, HTTP_METHOD method, const char *filename, bool ssl = false, const char *ca_name = "ca.pem",
+                           const char *user_data = "", size_t user_data_size = 0, uint32_t con_timeout = 120, uint32_t recv_timeout = 120,
+                           const char *content = "text/plain", const char *accept = "*/*", uint8_t read_mode = 0, const char *data_post = "", size_t size = 0, uint32_t timeout = 30000);
+    void http_read_file(const char *filename, uint32_t timeout = 1000);
+    bool http_term(uint32_t timeout = 1000);
+    void http_save_response(bool https = false);
+    size_t http_read_response(uint8_t *buffer, size_t read_size, size_t offset = 0, uint32_t timeout = 1000);
+    uint32_t http_response_size();
+    uint32_t http_response_header_size();
+    char *http_response_etag();
+
+    /*
+    <filename> The name of the file to be created, String type, max length is 256.
+    <mode> The mode to open the file, Numeric type, range is 0-2.
+    0 - if the file does not exist,it will be created. If the file exists, it will be directly opened. And both of them can be read and written.
+    1 - if the file does not exist,it will be created. If the file exists, it will be overwritten and cleared. And both of them can be read and written.
+    2 - if the file exist, open it and it can be read only. When thefiledoesnot exist, it will respond an error
+    default is 2.
+    <timeout> Timeout for accessing file.
+    */
+    bool fs_open(const char *filename, uint16_t mode = 2, uint32_t timeout = 1000);
+    bool fs_close(uint32_t timeout = 1000);
+    uint32_t fs_size(const char *filename, uint32_t timeout = 1000);
+    bool fs_delete(const char *filename, uint32_t timeout = 1000);
+    void fs_list_files(uint32_t timeout = 1000);
+    size_t fs_read(size_t read_size, uint8_t *buffer, uint32_t timeout = 1000);
 };
 
 #endif // MQTT_A7672SA_H_

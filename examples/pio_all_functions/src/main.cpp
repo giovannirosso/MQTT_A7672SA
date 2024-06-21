@@ -1,17 +1,34 @@
 #include "MQTT_A7672SA.h"
 #include "cert.h"
+#include "Update.h"
 
-A7672SA modem(GPIO_NUM_17, GPIO_NUM_16, GPIO_NUM_27);
+#define LTE_PIO GPIO_NUM_27
+#define LTE_DTR GPIO_NUM_22
+#define LTE_TX GPIO_NUM_17
+#define LTE_RX GPIO_NUM_16
 
 // #define APN "virtueyes.com.br"
 // #define APN "inlog.claro.com.br"
-#define APN "nbiot.gsim"
-// #define APN "fulltime.com.br"
+// #define APN "nbiot.gsim"
+#define APN "fulltime.com.br"
 
-#define SSL
+A7672SA modem(LTE_TX, LTE_RX, LTE_PIO);
+
+bool http_ota = false;
+
+struct ConnectionInformation
+{
+    String ip_address = "0.0.0.0";
+    String lte_imei = "0";
+    String lte_iccid = "0";
+    String lte_carrier = "NO SIM";
+    int32_t lte_signal_strength = 0;
+    uint64_t timestamp = 0;
+};
+
+ConnectionInformation connectionInformation;
 
 bool connected = false;
-bool reset = false;
 
 void mqttStatusCallback(mqtt_status &status)
 {
@@ -39,155 +56,272 @@ void mqttCallback(mqtt_message &message)
     }
 }
 
-void setup()
+bool initialize_modem(bool cert_write)
 {
-    modem.begin();
+    modem.set_apn(APN);
 
-    // modem.on_message_callback(mqttCallback);
+    uint32_t start = millis();
+    while (!modem.wait_network() && millis() - start < 100000U)
+    {
+        vTaskDelay(1000 / portTICK_PERIOD_MS);
+        Serial.println("[LTE] Waiting for network...");
+    }
 
-    // modem.on_mqtt_status(mqttStatusCallback);
+    if (millis() - start >= 100000U)
+    {
+        Serial.println("[LTE] Network not connected, restarting ...");
+        modem.restart();
+        return false;
+    }
 
-start:
+    if (modem.wait_network())
+    {
+        Serial.println("[LTE] Network connected");
+        modem.set_ntp_server("pool.ntp.org", 0, 5000);
 
-    while (!modem.is_ready())
+        if (cert_write)
+        {
+            if (modem.set_ca_cert(https_ca_cert, "ca.pem", sizeof(https_ca_cert)))
+            {
+                Serial.println("[LTE] CA Cert set");
+            }
+            else
+            {
+                Serial.println("[LTE] CA cert fail to set");
+                return false;
+            }
+        }
+        return true;
+    }
+}
+
+void update_sim_info()
+{
+    if (connectionInformation.lte_imei == "0")
+        connectionInformation.lte_imei = modem.get_imei();
+    if (connectionInformation.lte_carrier == "NO SIM")
+        connectionInformation.lte_carrier = modem.get_provider_name();
+    if (connectionInformation.lte_iccid == "0")
+        connectionInformation.lte_iccid = modem.get_iccid();
+    if (connectionInformation.lte_signal_strength == 0 || connectionInformation.lte_signal_strength == 99)
+        connectionInformation.lte_signal_strength = modem.signal_quality();
+}
+
+void updateFromFS()
+{
+    int chunk_size = 10200;
+    uint8_t buffer[chunk_size];
+
+    modem.wait_response();
+    uint32_t file_size = modem.fs_size("http_res.dat");
+    String etag = modem.http_response_etag();
+    if (!modem.fs_open("http_res.dat"))
+        return;
+
+    // é necessário interromper a rx_task aqui, para que ela não consuma bytes da uart
+    modem.RX_LOCK();
+
+    int total_chunks = ceil(file_size / chunk_size);
+    ESP_LOGD("total chunks", "%d", total_chunks);
+
+    if (Update.begin(file_size))
+    {
+        for (int i = 0; i <= total_chunks; i++)
+        {
+            int ret = modem.fs_read(chunk_size, buffer);
+            ESP_LOGD("UPDATE", "Reading chunk %d, size: %d", i, ret);
+
+            if (ret < 0)
+            {
+                ESP_LOGE("UPDATE", "Error reading from modem %d", ret);
+                modem.fs_close();
+                modem.fs_delete("http_res.dat");
+                return;
+            }
+
+            if (int ret2 = Update.write(buffer, ret) != ret)
+            {
+                ESP_LOGE("UPDATE", "Error writing to flash %d", ret2);
+                modem.fs_close();
+                modem.fs_delete("http_res.dat");
+                return;
+            }
+        }
+
+        modem.fs_close();
+
+        if (Update.end())
+        {
+            Serial.println("OTA finished!");
+            if (Update.isFinished())
+            {
+                Serial.println("Restart ESP device!");
+                modem.fs_delete("http_res.dat");
+                ESP.restart();
+            }
+            else
+            {
+                Serial.println("OTA not finished");
+                modem.fs_close();
+                modem.fs_delete("http_res.dat");
+            }
+        }
+        else
+        {
+            Serial.println("Error occured #: " + String(Update.getError()));
+            modem.fs_close();
+            modem.fs_delete("http_res.dat");
+        }
+    }
+
+    modem.RX_UNLOCK();
+}
+
+void updateFromHTTP(void *vParameteres)
+{
+    while (!http_ota)
     {
         vTaskDelay(1000 / portTICK_PERIOD_MS);
     }
 
-    bool sim = modem.sim_ready(5000);
-    ESP_LOGI("SIM", "%d", sim);
+    uint32_t len = modem.http_request("https://api.hookalarme.com.br:444/device/image/", HTTP_METHOD::GET, true, true, "ca.pem", "Authorization: Basic SEtGQURBMzc6dW9IMEZhZXlJWDBIMHdKaHFQNFdCVW1WYUk4VDdzdg==", 78, 120);
+    // bool len = modem.http_request_file("https://api.hookalarme.com.br/device/image/", HTTP_METHOD::GET, "hook.txt", true, "ca.pem", "Authorization: Basic SEtGQURBMzc6dW9IMEZhZXlJWDBIMHdKaHFQNFdCVW1WYUk4VDdzdg==", 78);
 
-    // int signal;
-    // uint32_t start = millis();
-    // do
-    // {
-    //     signal = modem.signal_quality(5000);
-    //     ESP_LOGI("SIGNAL", "%d", signal);
-    //     vTaskDelay(2000 / portTICK_PERIOD_MS);
-    // } while (signal == 99 && millis() - start < 2 * 60000);
-    // if (signal == 99)
-    // {
-    //     modem.restart();
-    // }
+    // fazer fine tuning do chunk size
+    // int file_size = modem.http
+    int chunk_size = 10000;
+    uint8_t buffer[chunk_size];
 
-    // bool apn = modem.set_apn(APN, 5000);
-    // ESP_LOGI("APN", "%d", apn);
-    // start = millis();
-    // while (!modem.wait_network() && millis() - start < 10000)
-    // {
-    //     vTaskDelay(5000 / portTICK_PERIOD_MS);
-    // }
-    // if (millis() - start >= 10000)
-    // {
-    //     modem.restart();
-    // }
+    // é necessário interromper a rx_task aqui, para que ela não consuma bytes da uart
+    modem.RX_LOCK();
 
-    // bool ntp = modem.set_ntp_server("pool.ntp.org", 0, 5000);
-    // ESP_LOGI("NTP", "%d", ntp);
+    int total_chunks = ceil(len / chunk_size);
+    ESP_LOGD("total chunks", "%d", total_chunks);
 
-    // String provider;
-    // do
-    // {
-    //     provider = modem.get_provider_name(5000);
-    //     printf("PROVIDER: %s\n", provider);
-    //     vTaskDelay(2000 / portTICK_PERIOD_MS);
-    // } while (provider == "");
-
-    // String imei;
-    // do
-    // {
-    //     imei = modem.get_imei(5000);
-    //     printf("IMEI: %s\n", imei.c_str());
-    //     vTaskDelay(2000 / portTICK_PERIOD_MS);
-    // } while (imei == "");
-
-    // String ip;
-    // do
-    // {
-    //     ip = modem.get_local_ip(5000).toString();
-    //     printf("IP: %s\n", ip.c_str());
-    //     vTaskDelay(2000 / portTICK_PERIOD_MS);
-    // } while (ip == "");
-
-    // time_t time;
-    // do
-    // {
-    //     time = modem.get_ntp_time(5000);
-    //     printf("TIME: %ld\n", time);
-    //     vTaskDelay(2000 / portTICK_PERIOD_MS);
-    // } while (time == 0);
-
-    // bool sub = false;
-    // bool pub = false;
-    // bool dis = false;
-
-    // byte payload[3] = "OK";
-
-#ifndef SSL
-    connected = modem.mqtt_connect("test.mosquitto.org", 1883, "A7672SA");
-    ESP_LOGI("MQTT_CONNECTED_NO_SSL -> ", "%d", connected);
-    if (connected)
+    if (Update.begin(len))
     {
-        const char *topics[10] = {"teste/sub", "teste/sub1", "teste/sub2", "teste/sub3", "teste/sub4", "teste/sub5", "teste/sub6", "teste/sub7", "teste/sub8", "teste/sub9"};
-        sub = modem.mqtt_subscribe_topics(topics, 10, 0, 5000);
-        ESP_LOGI("MQTT_SUBSCRIBE TOPICS -> ", "%d", sub);
+        for (int i = 0; i <= total_chunks; i++)
+        {
+            int ret = modem.http_read_response(buffer, chunk_size);
+            ESP_LOGD("UPDATE", "Reading chunk %d, size: %d", i, ret);
 
-        modem.mqtt_publish("teste/pub", payload, 3, 0, 5000);
-        ESP_LOGI("MQTT_PUBLISH -> ", "%d", pub);
+            if (ret < 0)
+            {
+                ESP_LOGE("UPDATE", "Error reading from modem %d", ret);
+                modem.sendCommand("FS", "AT+HTTPTERM" GSM_NL);
+                vTaskDelete(NULL);
+                return;
+            }
 
-        vTaskDelay(30000 / portTICK_PERIOD_MS);
+            if (int ret2 = Update.write(buffer, ret) != ret)
+            {
+                ESP_LOGE("UPDATE", "Error writing to flash %d", ret2);
+                modem.sendCommand("FS", "AT+HTTPTERM" GSM_NL);
+                vTaskDelete(NULL);
+                return;
+            }
+        }
 
-        dis = modem.mqtt_disconnect(5000);
-        ESP_LOGI("MQTT_DISCONNECT -> ", "%d", dis);
+        modem.http_term();
+
+        if (Update.end())
+        {
+            Serial.println("OTA finished!");
+            if (Update.isFinished())
+            {
+                Serial.println("Restart ESP device!");
+                ESP.restart();
+            }
+            else
+            {
+
+                Serial.println("OTA not finished");
+            }
+        }
+        else
+        {
+            Serial.println("Error occured #: " + String(Update.getError()));
+        }
     }
-#else
 
-    vTaskDelay(15000 / portTICK_PERIOD_MS);
+    modem.RX_UNLOCK();
+}
 
-    // bool cert = modem.set_ca_cert(mqtt_ca_cert, "ca.pem", sizeof(mqtt_ca_cert), 5000);
-    bool cert = modem.set_ca_cert(https_ca_cert, "ca.pem", sizeof(https_ca_cert), 5000);
+void setup()
+{
+    Serial.begin(115200);
 
-    ESP_LOGI("CERT", "%d", cert);
+    pinMode(LTE_PIO, OUTPUT);
+    digitalWrite(LTE_PIO, LOW);
 
-    // modem.mqtt_connect("test.mosquitto.org", 8883, "A7672SA", true, "", "", true, "ca.pem");
-    // ESP_LOGI("MQTT_CONNECTED_SSL -> ", "%d", connected);
-    // if (connected)
-    // {
-    //     sub = modem.mqtt_subscribe("teste/sub", 0, 5000);
-    //     ESP_LOGI("MQTT_SUBSCRIBE -> ", "%d", sub);
+    pinMode(LTE_DTR, OUTPUT);
+    digitalWrite(LTE_DTR, LOW);
 
-    //     pub = modem.mqtt_publish("teste/pub", payload, 3, 0, 5000);
-    //     ESP_LOGI("MQTT_PUBLISH -> ", "%d", pub);
+    modem.on_message_callback(mqttCallback);
+    modem.on_mqtt_status(mqttStatusCallback);
 
-    //     vTaskDelay(60000 / portTICK_PERIOD_MS);
+    modem.begin();
 
-    //     dis = modem.mqtt_disconnect(5000);
-    //     ESP_LOGI("MQTT_DISCONNECT -> ", "%d", dis);
-    // }
-#endif
-
+    // xTaskCreatePinnedToCore(updateFromFS, "updateFromFS", 4096 * 4, NULL, configMAX_PRIORITIES, NULL, 0);
+    xTaskCreatePinnedToCore(updateFromHTTP, "updateFromHTTP", 4096 * 4, NULL, configMAX_PRIORITIES, NULL, 0);
     ESP_LOGI("SETUP", "END");
 }
 
+bool modem_init = false;
 void loop()
 {
-    int len = 0;
-    // vTaskDelay(60000 / portTICK_PERIOD_MS);
-    ESP_LOGI("HTTP_REQUEST RESPONSE LEN", "%d", len);
-    modem.stop();
-    if (len > 0)
+    if (modem_init)
     {
-        const int size = strlen("AT+HTTPREAD=0,1024" GSM_NL);
-        const int txBytes = uart_write_bytes(UART_NUM_1, "AT+HTTPREAD=0,1024" GSM_NL, size);
-        // modem.http_read_response(1024);
-        // read by chunks
-        // char data[1024];
+        if (modem.is_ready())
+        {
+            Serial.println("[MODEM] Init");
+            if (modem.sim_ready())
+            {
+                Serial.println("[LTE] SIM READY");
+                if (initialize_modem(true))
+                {
+                    update_sim_info();
+                    modem_init = false;
+                    modem.mqtt_connect("test.mosquitto.org", 1883, "A7672SA");
+                }
+            }
+            else
+            {
+                Serial.println("[LTE] SIM NOT READY");
+                modem_init = true;
+            }
+        }
     }
-    //     modem.http_read_file("hook.dat");
-    // vTaskDelay(60000 / portTICK_PERIOD_MS);
-    // modem.http_term();
-    // vTaskDelay(15000 / portTICK_PERIOD_MS);
-    // modem.read_file("https_body.dat", 1364512);
-    vTaskDelay(60000 / portTICK_PERIOD_MS);
-    ESP_LOGI("LOOP", "END");
+
+    if (Serial.available() > 0)
+    {
+        String income = Serial.readString();
+
+        if (income == "init")
+        {
+            modem_init = true;
+            Serial.println("Modem Init");
+        }
+        else if (income == "otafs")
+        {
+            Serial.println("ota");
+            uint32_t status_code = modem.http_request("https://api.hookalarme.com.br:444/device/image/", HTTP_METHOD::GET, true, true, "ca.pem", "Authorization: Basic SEtGQURBMzc6dW9IMEZhZXlJWDBIMHdKaHFQNFdCVW1WYUk4VDdzdg==", 78, 120);
+            Serial.println("Status code: " + String(status_code));
+            String etag = modem.http_response_etag();
+            Serial.println("Etag: " + etag);
+            modem.http_term();
+            if (status_code == 200)
+                updateFromFS();
+        }
+        else if (income == "otahttp")
+        {
+            http_ota = true;
+        }
+        else
+        {
+            Serial.println("snd->" + income);
+            income = income + "\r\n";
+            modem.sendCommand("AT-LOOP", income.c_str());
+        }
+    }
 }
