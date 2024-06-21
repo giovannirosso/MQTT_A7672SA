@@ -11,6 +11,9 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#include <vector>
+#include <functional>
+#include <string>
 
 #include "esp_system.h"
 #include "esp_log.h"
@@ -24,8 +27,6 @@
 #include "driver/gpio.h"
 
 #include "Arduino.h"
-#include "FS.h"
-#include "SPIFFS.h"
 
 #include <IPAddress.h>
 
@@ -50,6 +51,14 @@ struct commandMessage
 {
     char logName[48];
     char data[1024]; // todo 1024
+};
+
+struct http_response
+{
+    uint16_t http_status_code;
+    size_t http_header_size;
+    size_t http_content_size;
+    char http_etag[32];
 };
 
 enum registration_status
@@ -87,12 +96,16 @@ private:
     QueueHandle_t uartQueue;
     TaskHandle_t rxTaskHandle;
     TaskHandle_t txTaskHandle;
+    SemaphoreHandle_t uart_guard;
 
     gpio_num_t tx_pin;
     gpio_num_t rx_pin;
     gpio_num_t en_pin;
 
     bool mqtt_connected;
+    bool http_response;
+
+    struct http_response http_response_data = {0, 0, 0, ""};
 
     bool at_ok;
     bool at_error;
@@ -101,9 +114,6 @@ private:
     bool at_publish;
     char *at_response;
     uint32_t rx_buffer_size;
-
-    bool http_response;
-    size_t http_response_size;
 
     void (*on_message_callback_)(mqtt_message &message);
     void (*on_mqtt_status_)(mqtt_status &status);
@@ -123,10 +133,11 @@ private:
 
 public:
     A7672SA();
-    A7672SA(gpio_num_t tx_pin, gpio_num_t rx_pin, gpio_num_t en_pin, int32_t baud_rate = 115200, uint32_t rx_buffer_size = 10240); // todo 1024
+    A7672SA(gpio_num_t tx_pin, gpio_num_t rx_pin, gpio_num_t en_pin, int32_t baud_rate = 115200, uint32_t rx_buffer_size = 10240);
     ~A7672SA();
 
-    SemaphoreHandle_t uart_guard;
+    void RX_LOCK();
+    void RX_UNLOCK();
 
     void on_message_callback(void (*callback)(mqtt_message &message))
     {
@@ -177,6 +188,7 @@ public:
     /*
     <url> URL of network resource.String,start with "http://" or"https://" a)http://’server’ :’tcpPort’ /’path’. b)https://’server’ :’tcpPort’ /’path’. "server" DNS domain name or IP address "path" path to a file or directory of a server "tcpPort" http default value is 80,https default value is 443.(canbeomitted)
     <method> HTTP request method, enum HTTP_METHOD, range is 0-4. 0: GET, 1: POST, 2: HEAD 3: DELETE, 4: PUT.
+    <save_to_fs> Whether to save the response content to file system, Boolean type. false: not save, true: save. Default is false.
     <ssl> Whether to use SSL, Boolean type. false: no SSL, true: use SSL. Default is false.
     <ca_name> The name of the CA certificate uploaded to simcom, String type, default is "ca.pem".
     <user_data> The customized HTTP header information. String type, max lengthis 256.
@@ -190,21 +202,36 @@ public:
     <size> The size of data to be sent to server, Numeric type. Default is 0.
     <readmode> For HTTPREAD, Numeric type, it can be set to 0 or 1. If set to1, youcan read the response content data from the same position repeatly. The limit is that the size of HTTP server response content shouldbeshorter than 1M.Default is 0.
     */
-    uint32_t http_request(const char *url, HTTP_METHOD method, bool ssl = false, const char *ca_name = "ca.pem",
+    uint32_t http_request(const char *url, HTTP_METHOD method, bool save_to_fs = false, bool ssl = false, const char *ca_name = "ca.pem",
                           const char *user_data = "", size_t user_data_size = 0, uint32_t con_timeout = 120, uint32_t recv_timeout = 120,
-                          const char *content = "text/plain", const char *accept = "*/*", uint8_t read_mode = 0, const char *data_post = "", size_t size = 0, uint32_t timeout = 10000);
+                          const char *content = "text/plain", const char *accept = "*/*", uint8_t read_mode = 0, const char *data_post = "", size_t size = 0, uint32_t timeout = 30000);
 
     bool http_request_file(const char *url, HTTP_METHOD method, const char *filename, bool ssl = false, const char *ca_name = "ca.pem",
                            const char *user_data = "", size_t user_data_size = 0, uint32_t con_timeout = 120, uint32_t recv_timeout = 120,
-                           const char *content = "text/plain", const char *accept = "*/*", uint8_t read_mode = 0, const char *data_post = "", size_t size = 0, uint32_t timeout = 10000);
+                           const char *content = "text/plain", const char *accept = "*/*", uint8_t read_mode = 0, const char *data_post = "", size_t size = 0, uint32_t timeout = 30000);
     void http_read_file(const char *filename, uint32_t timeout = 1000);
     bool http_term(uint32_t timeout = 1000);
     void http_save_response(bool https = false);
     size_t http_read_response(uint8_t *buffer, size_t read_size, size_t offset = 0, uint32_t timeout = 1000);
+    uint32_t http_response_size();
+    uint32_t http_response_header_size();
+    char *http_response_etag();
 
-    void read_file(const char *filename, size_t len, uint32_t timeout = 1000);
-    void write_to_fs(fs::FS &fs, const char *path, const char *message);
-    size_t fs_read_response(size_t read_size, uint8_t *buffer, uint32_t timeout = 1000);
+    /*
+    <filename> The name of the file to be created, String type, max length is 256.
+    <mode> The mode to open the file, Numeric type, range is 0-2.
+    0 - if the file does not exist,it will be created. If the file exists, it will be directly opened. And both of them can be read and written.
+    1 - if the file does not exist,it will be created. If the file exists, it will be overwritten and cleared. And both of them can be read and written.
+    2 - if the file exist, open it and it can be read only. When thefiledoesnot exist, it will respond an error
+    default is 2.
+    <timeout> Timeout for accessing file.
+    */
+    bool fs_open(const char *filename, uint16_t mode = 2, uint32_t timeout = 1000);
+    bool fs_close(uint32_t timeout = 1000);
+    uint32_t fs_size(const char *filename, uint32_t timeout = 1000);
+    bool fs_delete(const char *filename, uint32_t timeout = 1000);
+    void fs_list_files(uint32_t timeout = 1000);
+    size_t fs_read(size_t read_size, uint8_t *buffer, uint32_t timeout = 1000);
 };
 
 #endif // MQTT_A7672SA_H_

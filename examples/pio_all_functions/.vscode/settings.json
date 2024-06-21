@@ -3,6 +3,9 @@
     "files.associations": {
         "*.ejs": "html",
         "*.tcc": "cpp",
-        "algorithm": "cpp"
+        "algorithm": "cpp",
+        "string": "cpp",
+        "functional": "cpp",
+        "cmath": "cpp"
     }
 }
