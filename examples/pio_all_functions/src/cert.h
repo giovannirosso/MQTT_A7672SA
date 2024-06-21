@@ -1,7 +1,7 @@
 #ifndef CERTS_H
 #define CERTS_H
 
-const char ca_cert[] PROGMEM =
+const char mqtt_ca_cert[] PROGMEM =
     R"EOF(-----BEGIN CERTIFICATE-----
 MIIEAzCCAuugAwIBAgIUBY1hlCGvdj4NhBXkZ/uLUZNILAwwDQYJKoZIhvcNAQEL
 BQAwgZAxCzAJBgNVBAYTAkdCMRcwFQYDVQQIDA5Vbml0ZWQgS2luZ2RvbTEOMAwG
