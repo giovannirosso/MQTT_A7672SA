@@ -39,7 +39,7 @@ A7672SA::A7672SA(gpio_num_t tx_pin, gpio_num_t rx_pin, gpio_num_t en_pin, int32_
             .source_clk = UART_SCLK_APB,
         };
 
-    uart_driver_install(UART_NUM_1, rx_buffer_size * 2, 0, 0, NULL, 0);
+    uart_driver_install(UART_NUM_1, rx_buffer_size, 0, 0, NULL, 0);
     uart_param_config(UART_NUM_1, &uart_config);
     uart_set_pin(UART_NUM_1, tx_pin, rx_pin, UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE);
 }
@@ -1011,7 +1011,7 @@ uint32_t A7672SA::http_request(const char *url, HTTP_METHOD method, bool save_to
             if (this->wait_response(timeout))
             {
                 sprintf(cmd, "AT+CSSLCFG=\"cacert\",0,\"%s\"" GSM_NL, ca_name);
-                this->sendCommand("MQTT_CONNECT", cmd);
+                this->sendCommand("HTTP_SSL", cmd);
                 this->wait_response(timeout);
                 this->sendCommand("HTTP_SSL", "AT+HTTPPARA=\"SSLCFG\",0" GSM_NL);
                 this->wait_response(timeout);
@@ -1104,7 +1104,7 @@ bool A7672SA::http_request_file(const char *url, HTTP_METHOD method, const char 
             if (this->wait_response(timeout))
             {
                 sprintf(cmd, "AT+CSSLCFG=\"cacert\",0,\"%s\"" GSM_NL, ca_name);
-                this->sendCommand("MQTT_CONNECT", cmd);
+                this->sendCommand("HTTP_SSL", cmd);
                 this->wait_response(timeout);
                 this->sendCommand("HTTP_SSL", "AT+HTTPPARA=\"SSLCFG\",0" GSM_NL);
                 this->wait_response(timeout);
