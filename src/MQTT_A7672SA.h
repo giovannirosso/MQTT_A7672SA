@@ -133,11 +133,13 @@ private:
 
 public:
     A7672SA();
-    A7672SA(gpio_num_t tx_pin, gpio_num_t rx_pin, gpio_num_t en_pin, int32_t baud_rate = 115200, uint32_t rx_buffer_size = 10240);
+    A7672SA(gpio_num_t tx_pin, gpio_num_t rx_pin, gpio_num_t en_pin, int32_t baud_rate = 115200, uint32_t rx_buffer_size = 1024);
     ~A7672SA();
 
     void RX_LOCK();
     void RX_UNLOCK();
+    void REINIT_UART(uint32_t resize = 1024);
+    void DEINIT_UART();
 
     void on_message_callback(void (*callback)(mqtt_message &message))
     {

@@ -39,9 +39,9 @@ A7672SA::A7672SA(gpio_num_t tx_pin, gpio_num_t rx_pin, gpio_num_t en_pin, int32_
             .source_clk = UART_SCLK_APB,
         };
 
-    uart_driver_install(UART_NUM_1, rx_buffer_size, 0, 0, NULL, 0);
-    uart_param_config(UART_NUM_1, &uart_config);
-    uart_set_pin(UART_NUM_1, tx_pin, rx_pin, UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE);
+    ESP_ERROR_CHECK(uart_driver_install(UART_NUM_1, rx_buffer_size * 2, 0, 0, NULL, 0));
+    ESP_ERROR_CHECK(uart_param_config(UART_NUM_1, &uart_config));
+    ESP_ERROR_CHECK(uart_set_pin(UART_NUM_1, tx_pin, rx_pin, UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE));
 }
 
 A7672SA::~A7672SA()
@@ -78,8 +78,8 @@ bool A7672SA::begin()
 
     uartQueue = xQueueCreate(UART_QUEUE_SIZE, sizeof(commandMessage));
 
-    xTaskCreatePinnedToCore(this->rx_taskImpl, "uart_rx_task", 1024 * 5, this, configMAX_PRIORITIES - 5, &rxTaskHandle, 1); //++ Create FreeRtos Tasks //todo tamanho da memoria
-    xTaskCreatePinnedToCore(this->tx_taskImpl, "uart_tx_task", 1024 * 5, this, configMAX_PRIORITIES - 5, &txTaskHandle, 1);
+    xTaskCreate(this->rx_taskImpl, "uart_rx_task", 1024 * 5, this, configMAX_PRIORITIES - 5, &rxTaskHandle); //++ Create FreeRtos Tasks //todo tamanho da memoria
+    xTaskCreate(this->tx_taskImpl, "uart_tx_task", 1024 * 5, this, configMAX_PRIORITIES - 6, &txTaskHandle);
 
     ESP_LOGI("BEGIN", "SIMCOMM Started");
     return true;
@@ -97,7 +97,7 @@ bool A7672SA::stop()
         free(this->at_response);
     }
 
-    // uart_driver_delete(UART_NUM_1);
+    DEINIT_UART();
 
     vTaskDelete(rxTaskHandle);
     vTaskDelete(txTaskHandle);
@@ -212,6 +212,41 @@ void A7672SA::RX_UNLOCK()
 {
     if (this->uart_guard != NULL)
         xSemaphoreGive(this->uart_guard);
+}
+
+void A7672SA::DEINIT_UART()
+{
+    RX_LOCK();
+    vTaskSuspend(rxTaskHandle);
+    vTaskSuspend(txTaskHandle);
+
+    if (uart_is_driver_installed(UART_NUM_1))
+    {
+        uart_driver_delete(UART_NUM_1);
+    }
+}
+
+void A7672SA::REINIT_UART(uint32_t resize)
+{
+    this->rx_buffer_size = resize;
+
+    const uart_config_t uart_config =
+        {
+            .baud_rate = 115200,
+            .data_bits = UART_DATA_8_BITS,
+            .parity = UART_PARITY_DISABLE,
+            .stop_bits = UART_STOP_BITS_1,
+            .flow_ctrl = UART_HW_FLOWCTRL_DISABLE,
+            .source_clk = UART_SCLK_APB,
+        };
+
+    ESP_ERROR_CHECK(uart_driver_install(UART_NUM_1, this->rx_buffer_size * 2, 0, 0, NULL, 0));
+    ESP_ERROR_CHECK(uart_param_config(UART_NUM_1, &uart_config));
+    ESP_ERROR_CHECK(uart_set_pin(UART_NUM_1, tx_pin, rx_pin, UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE));
+
+    vTaskResume(rxTaskHandle);
+    vTaskResume(txTaskHandle);
+    RX_UNLOCK();
 }
 
 char **A7672SA::simcom_split_messages(const char *data, int *n_messages)
