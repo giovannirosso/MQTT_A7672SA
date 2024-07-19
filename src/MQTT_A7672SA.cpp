@@ -78,8 +78,8 @@ bool A7672SA::begin()
 
     uartQueue = xQueueCreate(UART_QUEUE_SIZE, sizeof(commandMessage));
 
-    xTaskCreate(this->rx_taskImpl, "uart_rx_task", 1024 * 5, this, configMAX_PRIORITIES - 5, &rxTaskHandle); //++ Create FreeRtos Tasks //todo tamanho da memoria
-    xTaskCreate(this->tx_taskImpl, "uart_tx_task", 1024 * 5, this, configMAX_PRIORITIES - 6, &txTaskHandle);
+    xTaskCreate(this->rx_taskImpl, "uart_rx_task", configIDLE_TASK_STACK_SIZE * 5, this, configMAX_PRIORITIES - 5, &rxTaskHandle); //++ Create FreeRtos Tasks //todo tamanho da memoria
+    xTaskCreate(this->tx_taskImpl, "uart_tx_task", configIDLE_TASK_STACK_SIZE * 5, this, configMAX_PRIORITIES - 6, &txTaskHandle);
 
     ESP_LOGI("BEGIN", "SIMCOMM Started");
     return true;
