@@ -30,6 +30,8 @@
 
 #include <IPAddress.h>
 
+// #define DEBUG_LTE
+
 #define GSM_PROGMEM
 typedef const char *ConstStr;
 
@@ -50,7 +52,7 @@ struct mqtt_message
 struct commandMessage
 {
     char logName[48];
-    char data[1024]; // todo 1024
+    char data[1024];
 };
 
 struct http_response
@@ -96,7 +98,7 @@ private:
     QueueHandle_t uartQueue;
     TaskHandle_t rxTaskHandle;
     TaskHandle_t txTaskHandle;
-    SemaphoreHandle_t uart_guard;
+    SemaphoreHandle_t rx_guard, publish_guard;
 
     gpio_num_t tx_pin;
     gpio_num_t rx_pin;
@@ -104,6 +106,7 @@ private:
 
     bool mqtt_connected;
     bool http_response;
+    bool publishing;
 
     struct http_response http_response_data = {0, 0, 0, ""};
 
@@ -124,7 +127,7 @@ private:
     static void tx_taskImpl(void *pvParameters);
 
     int send_cmd_to_simcomm(const char *logName, const char *data);
-    int send_cmd_to_simcomm(const char *logName, byte *data, int len);
+    int send_cmd_to_simcomm(const char *logName, uint8_t *data, int len);
 
     bool receiveCommand(commandMessage *message);
 
@@ -136,8 +139,10 @@ public:
     A7672SA(gpio_num_t tx_pin, gpio_num_t rx_pin, gpio_num_t en_pin, int32_t baud_rate = 115200, uint32_t rx_buffer_size = 1024);
     ~A7672SA();
 
-    void RX_LOCK();
+    void RX_LOCK(uint32_t timeout = portMAX_DELAY);
     void RX_UNLOCK();
+    void PUBLISH_LOCK(uint32_t timeout = portMAX_DELAY);
+    void PUBLISH_UNLOCK();
     void REINIT_UART(uint32_t resize = 1024);
     void DEINIT_UART();
 
@@ -151,7 +156,8 @@ public:
         on_mqtt_status_ = callback;
     }
 
-    void sendCommand(const char *log, const char *data);
+    void sendCommand(const char *log, const char *data, bool publish = false);
+    void sendCommand(const char *log, uint8_t *data, int len, bool publish = false);
 
     bool wait_input(uint32_t timeout = 2000);
     bool wait_publish(uint32_t timeout = 2000);
@@ -182,7 +188,7 @@ public:
     bool mqtt_connect(const char *host, uint16_t port, const char *clientId, bool clean_session = true, const char *username = "", const char *password = "", bool ssl = false, const char *ca_name = "ca.pem", uint16_t keepalive = 60, uint32_t timeout = 10000);
     bool mqtt_disconnect(uint32_t timeout = 1000);
     bool mqtt_release_client(uint32_t timeout = 1000);
-    bool mqtt_publish(const char *topic, byte *data, size_t len, uint16_t qos = 0, uint32_t timeout = 3000);
+    bool mqtt_publish(const char *topic, uint8_t *data, size_t len, uint16_t qos = 0, uint32_t timeout = 3000);
     bool mqtt_subscribe_topics(const char *topic[10], int n_topics = 10, uint16_t qos = 0, uint32_t timeout = 1000);
     bool mqtt_subscribe(const char *topic, uint16_t qos, uint32_t timeout = 1000);
     bool mqtt_is_connected();

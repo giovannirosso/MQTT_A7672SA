@@ -14,6 +14,7 @@ A7672SA::A7672SA()
     this->at_publish = false;
     this->mqtt_connected = false;
     this->http_response = false;
+    this->publishing = false;
 }
 
 A7672SA::A7672SA(gpio_num_t tx_pin, gpio_num_t rx_pin, gpio_num_t en_pin, int32_t baud_rate, uint32_t rx_buffer_size)
@@ -24,6 +25,8 @@ A7672SA::A7672SA(gpio_num_t tx_pin, gpio_num_t rx_pin, gpio_num_t en_pin, int32_
     this->at_publish = false;
     this->mqtt_connected = false;
     this->http_response = false;
+    this->publishing = false;
+
     this->tx_pin = tx_pin;
     this->rx_pin = rx_pin;
     this->en_pin = en_pin;
@@ -74,7 +77,8 @@ bool A7672SA::begin()
     gpio_set_level(this->en_pin, 0);
     vTaskDelay(5000 / portTICK_PERIOD_MS);
 
-    this->uart_guard = xSemaphoreCreateMutex(); //++ Create FreeRtos Semaphore
+    this->rx_guard = xSemaphoreCreateMutex();      //++ Create FreeRtos Semaphore
+    this->publish_guard = xSemaphoreCreateMutex(); //++ Create FreeRtos Semaphore
 
     uartQueue = xQueueCreate(UART_QUEUE_SIZE, sizeof(commandMessage));
 
@@ -106,14 +110,20 @@ bool A7672SA::stop()
     return true;
 }
 
-void A7672SA::sendCommand(const char *logName, const char *data)
+void A7672SA::sendCommand(const char *logName, const char *data, bool publish)
 {
-    // ESP_LOGI(logName, "Sending Command: %s", data);
     commandMessage message;
     strcpy(message.logName, logName);
     strcpy(message.data, data);
     xQueueSend(uartQueue, &message, portMAX_DELAY);
-    // sendCommand(message);
+}
+
+void A7672SA::sendCommand(const char *logName, uint8_t *data, int len, bool publish)
+{
+    commandMessage message;
+    strcpy(message.logName, logName);
+    memcpy(message.data, data, len);
+    xQueueSend(uartQueue, &message, portMAX_DELAY);
 }
 
 bool A7672SA::receiveCommand(commandMessage *message)
@@ -160,8 +170,7 @@ void A7672SA::tx_task()
         {
             send_cmd_to_simcomm(receivedCommand.logName, receivedCommand.data);
         }
-
-        vTaskDelay(50 / portTICK_PERIOD_MS); // todo era 250 // depois passou para 5 // agr 50
+        vTaskDelay(50 / portTICK_PERIOD_MS);
     }
 }
 
@@ -183,7 +192,9 @@ void A7672SA::rx_task() //++ UART Receive Task
         if (rxBytes > 0)
         {
             this->at_response[rxBytes] = 0;
+#ifdef DEBUG_LTE
             ESP_LOGI(RX_TASK_TAG, "Read %d bytes: '%s'", rxBytes, this->at_response);
+#endif
             int n_messages = 0;
             char **messages = this->simcom_split_messages(this->at_response, &n_messages);
             for (int i = 0; i < n_messages; i++)
@@ -200,23 +211,42 @@ void A7672SA::rx_task() //++ UART Receive Task
     free(this->at_response);
 }
 
-void A7672SA::RX_LOCK()
+void A7672SA::RX_LOCK(uint32_t timeout)
 {
-    if (this->uart_guard != NULL)
+    if (this->rx_guard != NULL)
         do
         {
-        } while (xSemaphoreTake(this->uart_guard, portMAX_DELAY) != pdPASS);
+        } while (xSemaphoreTake(this->rx_guard, timeout) != pdPASS);
 }
 
 void A7672SA::RX_UNLOCK()
 {
-    if (this->uart_guard != NULL)
-        xSemaphoreGive(this->uart_guard);
+    if (this->rx_guard != NULL)
+        xSemaphoreGive(this->rx_guard);
+}
+
+void A7672SA::PUBLISH_LOCK(uint32_t timeout)
+{
+    if (this->publish_guard != NULL)
+        do
+        {
+            vTaskDelay(10 / portTICK_PERIOD_MS);
+        } while (xSemaphoreTake(this->publish_guard, timeout) != pdPASS);
+
+    this->publishing = true;
+}
+
+void A7672SA::PUBLISH_UNLOCK()
+{
+    if (this->publish_guard != NULL)
+        xSemaphoreGive(this->publish_guard);
+
+    this->publishing = false;
 }
 
 void A7672SA::DEINIT_UART()
 {
-    RX_LOCK();
+    this->RX_LOCK();
     vTaskSuspend(rxTaskHandle);
     vTaskSuspend(txTaskHandle);
 
@@ -246,7 +276,7 @@ void A7672SA::REINIT_UART(uint32_t resize)
 
     vTaskResume(rxTaskHandle);
     vTaskResume(txTaskHandle);
-    RX_UNLOCK();
+    this->RX_UNLOCK();
 }
 
 char **A7672SA::simcom_split_messages(const char *data, int *n_messages)
@@ -452,11 +482,18 @@ bool A7672SA::restart(uint32_t timeout)
     return this->wait_response(timeout);
 }
 
-int A7672SA::send_cmd_to_simcomm(const char *logName, byte *data, int len) //++ Sending AT Commands to Simcomm via UART
+int A7672SA::send_cmd_to_simcomm(const char *logName, uint8_t *data, int len) //++ Sending AT Commands to Simcomm via UART
 {
     const int txBytes = uart_write_bytes(UART_NUM_1, data, len);
-    // ESP_LOGI(logName, "Wrote %d bytes of %d requested", txBytes, len);
-    // ESP_LOGI(logName, "Wrote %s", data);
+#ifdef DEBUG_LTE
+    ESP_LOGI(logName, "Wrote %d bytes of %d requested", txBytes, len);
+    printf("DATA WROTE BYTES [%s]", logName);
+    for (int i = 0; i < len; i++)
+    {
+        printf("%02X", data[i]);
+    }
+    printf("\n");
+#endif
     return txBytes;
 }
 
@@ -464,8 +501,15 @@ int A7672SA::send_cmd_to_simcomm(const char *logName, const char *data) //++ Sen
 {
     const int len = strlen(data);
     const int txBytes = uart_write_bytes(UART_NUM_1, data, len);
-    // ESP_LOGI(logName, "Wrote %d bytes of %d requested", txBytes, len);
-    // ESP_LOGI(logName, "Wrote %s", data);
+#ifdef DEBUG_LTE
+    ESP_LOGI(logName, "Wrote %d bytes of %d requested", txBytes, len);
+    printf("DATA WROTE CHARS [%s]", logName);
+    for (int i = 0; i < len; i++)
+    {
+        printf("%c", data[i]);
+    }
+    printf("\n");
+#endif
     return txBytes;
 }
 
@@ -584,6 +628,9 @@ bool A7672SA::sim_ready(uint32_t timeout)
 
 int A7672SA::signal_quality(uint32_t timeout)
 {
+    if (this->publishing)
+        return 0;
+
     this->sendCommand("SIGNAL_QUALITY", "AT+CSQ" GSM_NL);
     if (this->wait_response(timeout))
     {
@@ -604,6 +651,9 @@ int A7672SA::signal_quality(uint32_t timeout)
 
 bool A7672SA::set_apn(const char *apn, uint32_t timeout)
 {
+    if (this->publishing)
+        return false;
+
     char data[100];
     sprintf(data, "AT+CGDCONT=1,\"IP\",\"%s\"" GSM_NL, apn);
     this->sendCommand("SET_APN", data);
@@ -621,6 +671,9 @@ bool A7672SA::set_apn(const char *apn, uint32_t timeout)
 
 bool A7672SA::wait_network(uint32_t timeout)
 {
+    if (this->publishing)
+        return false;
+
     this->sendCommand("WAIT_NETWORK", "AT+CREG?" GSM_NL);
     if (this->wait_response(timeout))
     {
@@ -648,6 +701,9 @@ bool A7672SA::wait_network(uint32_t timeout)
 
 bool A7672SA::set_ntp_server(const char *ntp_server, int time_zone, uint32_t timeout)
 {
+    if (this->publishing)
+        return false;
+
     char data[100];
     sprintf(data, "AT+CNTP=\"%s\",%d" GSM_NL, ntp_server, time_zone);
     this->sendCommand("SET_NTP_SERVER", data);
@@ -680,6 +736,9 @@ time_t convertToTimestamp(const char *arry)
 
 time_t A7672SA::get_ntp_time(uint32_t timeout)
 {
+    if (this->publishing)
+        return 0;
+
     this->sendCommand("GET_NTP_TIME", "AT+CCLK?" GSM_NL);
     if (wait_response(timeout))
     {
@@ -715,6 +774,9 @@ AT+CSPN anwser:
 */
 String A7672SA::get_provider_name(uint32_t timeout)
 {
+    if (this->publishing)
+        return "NO SIM";
+
     this->sendCommand("GET_PROVIDER_NAME", "AT+CSPN?" GSM_NL);
     if (this->wait_response(timeout))
     {
@@ -746,6 +808,9 @@ AT+CGSN anwser:
 */
 String A7672SA::get_imei(uint32_t timeout)
 {
+    if (this->publishing)
+        return "0";
+
     this->sendCommand("GET_IMEI", "AT+CGSN" GSM_NL);
     if (this->wait_response(timeout))
     {
@@ -775,6 +840,9 @@ AT+CICCID
 */
 String A7672SA::get_iccid(uint32_t timeout)
 {
+    if (this->publishing)
+        return "0";
+
     this->sendCommand("GET_ICCID", "AT+CICCID" GSM_NL);
     if (this->wait_response(timeout))
     {
@@ -805,6 +873,9 @@ AT+CGPADDR anwser:
 */
 IPAddress A7672SA::get_local_ip(uint32_t timeout)
 {
+    if (this->publishing)
+        return IPAddress(0, 0, 0, 0);
+
     this->sendCommand("GET_LOCAL_IP", "AT+CGPADDR" GSM_NL);
     if (this->wait_response(timeout))
     {
@@ -944,37 +1015,19 @@ bool A7672SA::mqtt_disconnect(uint32_t timeout)
     return this->wait_response(timeout);
 }
 
-bool A7672SA::mqtt_publish(const char *topic, byte *data, size_t len, uint16_t qos, uint32_t timeout)
+bool A7672SA::mqtt_publish(const char *topic, uint8_t *data, size_t len, uint16_t qos, uint32_t timeout)
 {
-    if (len == 0)
+    const size_t data_size = strlen(topic) + len + 50;
+    char data_string[data_size];
+    ESP_LOGI("MQTT_PUBLISH", "LEN =  %d bytes", len);
+    sprintf(data_string, "AT+CMQTTPUB=0,\"%s\",%d,%d" GSM_NL, topic, qos, len);
+    this->sendCommand("MQTT_PUBLISH_CMD", data_string);
+    if (this->wait_input(timeout))
     {
-        byte zero_data[2] = {0x08, 0x00};
-        len = sizeof(zero_data);
-
-        const size_t data_size = strlen(topic) + len + 50;
-        char data_string[data_size];
-        ESP_LOGI("MQTT_PUBLISH", "LEN =  %d bytes", len);
-        sprintf(data_string, "AT+CMQTTPUB=0,\"%s\",%d,%d" GSM_NL, topic, qos, len);
-        this->sendCommand("MQTT_PUBLISH_CMD", data_string);
-        if (this->wait_input(timeout))
+        this->send_cmd_to_simcomm("MQTT_PUBLISH_DATA", data, len);
+        if (this->wait_publish(timeout))
         {
-            this->send_cmd_to_simcomm("MQTT_PUBLISH_ZERO", zero_data, len);
-            if (this->wait_publish(timeout))
-                return true;
-        }
-    }
-    else
-    {
-        const size_t data_size = strlen(topic) + len + 50;
-        char data_string[data_size];
-        ESP_LOGI("MQTT_PUBLISH", "LEN =  %d bytes", len);
-        sprintf(data_string, "AT+CMQTTPUB=0,\"%s\",%d,%d" GSM_NL, topic, qos, len);
-        this->sendCommand("MQTT_PUBLISH_CMD", data_string);
-        if (this->wait_input(timeout))
-        {
-            this->send_cmd_to_simcomm("MQTT_PUBLISH_DATA", data, len);
-            if (this->wait_publish(timeout))
-                return true;
+            return true;
         }
     }
     return false;
@@ -982,6 +1035,9 @@ bool A7672SA::mqtt_publish(const char *topic, byte *data, size_t len, uint16_t q
 
 bool A7672SA::mqtt_subscribe_topics(const char *topic[10], int n_topics, uint16_t qos, uint32_t timeout)
 {
+    if (this->publishing)
+        return false;
+
     for (int i = 0; i < n_topics; i++)
     {
         const size_t data_size = strlen(topic[i]) + 50;
@@ -992,6 +1048,7 @@ bool A7672SA::mqtt_subscribe_topics(const char *topic[10], int n_topics, uint16_
         {
             int tx_bytes = uart_write_bytes(UART_NUM_1, topic[i], strlen(topic[i]));
             ESP_LOGI("MQTT_SUBSCRIBE", "Wrote %d bytes", tx_bytes);
+            // this->sendCommand("MQTT_SUBSCRIBE", topic[i]);
             this->wait_response(timeout);
         }
     }
@@ -1001,6 +1058,9 @@ bool A7672SA::mqtt_subscribe_topics(const char *topic[10], int n_topics, uint16_
 
 bool A7672SA::mqtt_subscribe(const char *topic, uint16_t qos, uint32_t timeout)
 {
+    if (this->publishing)
+        return false;
+
     const size_t data_size = strlen(topic) + 50;
     char data_string[data_size];
     sprintf(data_string, "AT+CMQTTSUB=0,\"%s\",%d" GSM_NL, topic, qos);
