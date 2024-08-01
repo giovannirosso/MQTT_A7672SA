@@ -722,7 +722,7 @@ time_t convertToTimestamp(const char *arry)
     sscanf(arry, "%d/%d/%d,%d:%d:%d", &timeStruct.tm_year, &timeStruct.tm_mon,
            &timeStruct.tm_mday, &timeStruct.tm_hour, &timeStruct.tm_min, &timeStruct.tm_sec);
 
-    timeStruct.tm_year += 100; // Assuming 2000-2099
+    timeStruct.tm_year += 100; // Years since 1900
     timeStruct.tm_mon -= 1;    // Months are 0-based
 
     time_t timestamp = mktime(&timeStruct);

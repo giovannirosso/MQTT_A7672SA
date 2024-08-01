@@ -33,7 +33,6 @@
 // #define DEBUG_LTE
 
 #define GSM_PROGMEM
-typedef const char *ConstStr;
 
 #define UART_QUEUE_SIZE 10
 
