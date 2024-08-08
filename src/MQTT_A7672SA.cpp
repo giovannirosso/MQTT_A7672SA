@@ -247,12 +247,17 @@ void A7672SA::PUBLISH_UNLOCK()
 void A7672SA::DEINIT_UART()
 {
     this->RX_LOCK();
-    vTaskSuspend(rxTaskHandle);
-    vTaskSuspend(txTaskHandle);
+    
+    vTaskDelete(rxTaskHandle);
+    vTaskDelete(txTaskHandle);
 
     if (uart_is_driver_installed(UART_NUM_1))
     {
-        uart_driver_delete(UART_NUM_1);
+        int ret = uart_driver_delete(UART_NUM_1);
+        if (ret != ESP_OK)
+        {
+            ESP_LOGE("DEINIT_UART", "Error deleting UART driver: %d", ret);
+        }
     }
 }
 
@@ -270,12 +275,13 @@ void A7672SA::REINIT_UART(uint32_t resize)
             .source_clk = UART_SCLK_APB,
         };
 
-    ESP_ERROR_CHECK(uart_driver_install(UART_NUM_1, this->rx_buffer_size * 2, 0, 0, NULL, 0));
     ESP_ERROR_CHECK(uart_param_config(UART_NUM_1, &uart_config));
     ESP_ERROR_CHECK(uart_set_pin(UART_NUM_1, tx_pin, rx_pin, UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE));
+    ESP_ERROR_CHECK(uart_driver_install(UART_NUM_1, this->rx_buffer_size, 0, 0, NULL, 0));
 
-    vTaskResume(rxTaskHandle);
-    vTaskResume(txTaskHandle);
+    xTaskCreate(this->rx_taskImpl, "uart_rx_task", configIDLE_TASK_STACK_SIZE * 5, this, configMAX_PRIORITIES - 5, &rxTaskHandle); //++ Create FreeRtos Tasks //todo tamanho da memoria
+    xTaskCreate(this->tx_taskImpl, "uart_tx_task", configIDLE_TASK_STACK_SIZE * 5, this, configMAX_PRIORITIES - 6, &txTaskHandle);
+
     this->RX_UNLOCK();
 }
 
