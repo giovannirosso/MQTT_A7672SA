@@ -247,7 +247,7 @@ void A7672SA::PUBLISH_UNLOCK()
 void A7672SA::DEINIT_UART()
 {
     this->RX_LOCK();
-    
+
     vTaskDelete(rxTaskHandle);
     vTaskDelete(txTaskHandle);
 
@@ -1178,9 +1178,9 @@ uint32_t A7672SA::http_request(const char *url, HTTP_METHOD method, bool save_to
     return 0;
 }
 
-bool A7672SA::http_request_file(const char *url, HTTP_METHOD method, const char *filename, bool ssl, const char *ca_name,
-                                const char *user_data, size_t user_data_size, uint32_t con_timeout, uint32_t recv_timeout,
-                                const char *content, const char *accept, uint8_t read_mode, const char *data_post, size_t size, uint32_t timeout)
+uint32_t A7672SA::http_request_file(const char *url, HTTP_METHOD method, const char *filename, bool ssl, const char *ca_name,
+                                    const char *user_data, size_t user_data_size, uint32_t con_timeout, uint32_t recv_timeout,
+                                    const char *content, const char *accept, uint8_t read_mode, const char *data_post, size_t size, uint32_t timeout)
 {
     char cmd[100];
     sprintf(cmd, "AT+FSOPEN=C:/%s,0" GSM_NL, filename);
@@ -1246,7 +1246,7 @@ bool A7672SA::http_request_file(const char *url, HTTP_METHOD method, const char 
                     this->send_cmd_to_simcomm("HTTP_REQUEST", (byte *)data_post, size);
                     if (this->wait_response(timeout))
                     {
-                        return true;
+                        return this->http_response_data.http_status_code;
                     }
                 }
             }
@@ -1258,11 +1258,11 @@ bool A7672SA::http_request_file(const char *url, HTTP_METHOD method, const char 
                 this->sendCommand("HTTP_REQUEST", "AT+HTTPHEAD" GSM_NL);
                 this->wait_http_response(timeout);
 
-                return true;
+                return this->http_response_data.http_status_code;
             }
         }
     }
-    return false;
+    return 0;
 }
 
 uint32_t A7672SA::http_response_size()
