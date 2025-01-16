@@ -56,7 +56,7 @@ struct commandMessage
 
 struct http_response
 {
-    uint16_t http_status_code;
+    uint32_t http_status_code;
     size_t http_header_size;
     size_t http_content_size;
     char http_etag[32];

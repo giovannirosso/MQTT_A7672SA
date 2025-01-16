@@ -263,6 +263,7 @@ void A7672SA::DEINIT_UART()
 
 void A7672SA::REINIT_UART(uint32_t resize)
 {
+    this->at_ready = true;
     this->rx_buffer_size = resize;
 
     const uart_config_t uart_config =
