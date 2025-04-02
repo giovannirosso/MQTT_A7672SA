@@ -58,6 +58,32 @@ void mqttCallback(mqtt_message &message)
 
 bool initialize_modem(bool cert_write)
 {
+    modem.set_network_mode(network_mode::AUTOMATIC);
+    std::vector<NetworkOperator> operators = modem.get_operator_list(180000);
+
+    for (const auto &op : operators)
+    {
+        Serial.println("[LTE] Operator: " + String(op.short_name));
+        Serial.println("[LTE] Long Name: " + String(op.long_name));
+        Serial.println("[LTE] Numeric Code: " + String(op.numeric_code));
+        Serial.println("[LTE] Access Tech: " + String(op.access_tech));
+        Serial.println("[LTE] Status: " + String(op.status));
+        Serial.println("[LTE] ------------------------");
+    }
+
+    // Verificar se a operadora "VIVO" está disponível
+    bool vivoAvailable = false;
+    for (const auto &op : operators)
+    {
+        if (strcmp(op.short_name, modem.get_provider_name().c_str()) == 0)
+        {
+            vivoAvailable = true;
+            Serial.println("[LTE] " + modem.get_provider_name() + " operator found");
+            modem.set_operator(op);
+            break;
+        }
+    }
+
     modem.set_apn(APN);
 
     uint32_t start = millis();
@@ -263,7 +289,7 @@ void setup()
     modem.begin();
 
     // xTaskCreatePinnedToCore(updateFromFS, "updateFromFS", 4096 * 4, NULL, configMAX_PRIORITIES, NULL, 0);
-    xTaskCreatePinnedToCore(updateFromHTTP, "updateFromHTTP", 4096 * 4, NULL, configMAX_PRIORITIES, NULL, 0);
+    // xTaskCreatePinnedToCore(updateFromHTTP, "updateFromHTTP", 4096 * 4, NULL, configMAX_PRIORITIES, NULL, 0);
     ESP_LOGI("SETUP", "END");
 }
 

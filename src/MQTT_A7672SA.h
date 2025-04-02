@@ -2,6 +2,7 @@
  * @file       MQTT_A7672SA.h
  * @author     Giovanni de Rosso Unruh
  * @date       07/2023
+ * @revision   1.0.1
  */
 
 #ifndef MQTT_A7672SA_H_
@@ -62,6 +63,15 @@ struct http_response
     char http_etag[32];
 };
 
+struct NetworkOperator
+{
+    int status;
+    char long_name[32];
+    char short_name[16];
+    char numeric_code[8];
+    int access_tech;
+};
+
 enum registration_status
 {
     NOT_REGISTERED = 0,
@@ -91,6 +101,14 @@ enum HTTP_METHOD
     PUT = 4
 };
 
+enum network_mode
+{
+    AUTOMATIC = 2,
+    GSM_ONLY = 13,
+    WCDMA_ONLY = 14,
+    LTE_ONLY = 38
+};
+
 class A7672SA
 {
 private:
@@ -116,6 +134,8 @@ private:
     bool at_publish;
     char *at_response;
     uint32_t rx_buffer_size;
+    std::vector<NetworkOperator> available_operators;
+    bool operators_list_updated;
 
     void (*on_message_callback_)(mqtt_message &message);
     void (*on_mqtt_status_)(mqtt_status &status);
@@ -158,6 +178,7 @@ public:
     void sendCommand(const char *log, const char *data, bool publish = false);
     void sendCommand(const char *log, uint8_t *data, int len, bool publish = false);
 
+    bool wait_for_condition(uint32_t timeout, std::function<bool()> condition_check, const char *operation_name);
     bool wait_input(uint32_t timeout = 2000);
     bool wait_publish(uint32_t timeout = 2000);
     bool wait_network(uint32_t timeout = 10000);
@@ -174,6 +195,10 @@ public:
     bool sim_ready(uint32_t timeout = 1000);
     int signal_quality(uint32_t timeout = 1000);
 
+    bool set_network_mode(network_mode mode, uint32_t timeout = 1000);
+    std::vector<NetworkOperator> get_operator_list(uint32_t timeout = 10000);
+
+    bool set_operator(NetworkOperator op, uint32_t timeout = 1000);
     bool set_apn(const char *apn, uint32_t timeout = 1000);
     bool set_ntp_server(const char *ntp_server, int time_zone, uint32_t timeout = 1000);
 

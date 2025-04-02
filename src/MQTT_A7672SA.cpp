@@ -15,6 +15,7 @@ A7672SA::A7672SA()
     this->mqtt_connected = false;
     this->http_response = false;
     this->publishing = false;
+    this->operators_list_updated = false;
 }
 
 A7672SA::A7672SA(gpio_num_t tx_pin, gpio_num_t rx_pin, gpio_num_t en_pin, int32_t baud_rate, uint32_t rx_buffer_size)
@@ -26,6 +27,7 @@ A7672SA::A7672SA(gpio_num_t tx_pin, gpio_num_t rx_pin, gpio_num_t en_pin, int32_
     this->mqtt_connected = false;
     this->http_response = false;
     this->publishing = false;
+    this->operators_list_updated = false;
 
     this->tx_pin = tx_pin;
     this->rx_pin = rx_pin;
@@ -286,19 +288,73 @@ void A7672SA::REINIT_UART(uint32_t resize)
     this->RX_UNLOCK();
 }
 
+// char **A7672SA::simcom_split_messages(const char *data, int *n_messages)
+// {
+//     char **messages = NULL;
+//     *n_messages = 0;
+
+//     char *data_copy = strdup(data);
+//     char *token = strtok(data_copy, GSM_NM);
+//     while (token != NULL)
+//     {
+//         if (strlen(token) > 0)
+//         {
+//             messages = (char **)realloc(messages, (*n_messages + 1) * sizeof(char *));
+//             messages[*n_messages] = strdup(token);
+//             (*n_messages)++;
+//         }
+//         token = strtok(NULL, GSM_NM);
+//     }
+//     free(data_copy);
+//     return messages;
+// }
+
 char **A7672SA::simcom_split_messages(const char *data, int *n_messages)
 {
     char **messages = NULL;
     *n_messages = 0;
 
     char *data_copy = strdup(data);
+    if (!data_copy)
+    {
+        ESP_LOGE("SPLIT_MESSAGES", "Falha ao alocar memória para data_copy");
+        return NULL;
+    }
+
     char *token = strtok(data_copy, GSM_NM);
     while (token != NULL)
     {
         if (strlen(token) > 0)
         {
-            messages = (char **)realloc(messages, (*n_messages + 1) * sizeof(char *));
+            char **temp = (char **)realloc(messages, (*n_messages + 1) * sizeof(char *));
+            if (!temp)
+            {
+                ESP_LOGE("SPLIT_MESSAGES", "Falha ao realocar memória para messages");
+                // Libera a memória já alocada
+                for (int i = 0; i < *n_messages; i++)
+                {
+                    free(messages[i]);
+                }
+                free(messages);
+                free(data_copy);
+                return NULL;
+            }
+            messages = temp;
+
             messages[*n_messages] = strdup(token);
+            if (!messages[*n_messages])
+            {
+                ESP_LOGE("SPLIT_MESSAGES", "Falha ao alocar memória para messages[%d]", *n_messages);
+                // Libera a memória já alocada
+                for (int i = 0; i < *n_messages; i++)
+                {
+                    free(messages[i]);
+                }
+                free(messages);
+                free(data_copy);
+                return NULL;
+            }
+
             (*n_messages)++;
         }
         token = strtok(NULL, GSM_NM);
@@ -458,6 +514,109 @@ void A7672SA::simcomm_response_parser(const char *data)
              ESP_LOGI("PARSER", "ETAG: %s", this->http_response_data.http_etag);
              this->http_response = true;
          }},
+        {"COPS:", [this](const char *data, const char *found)
+         {
+             ESP_LOGI("PARSER", "Recebida resposta do comando COPS");
+
+             this->available_operators.clear();
+
+             String response(found);
+             if (response.indexOf("(") > 0)
+             {
+                 int start = response.indexOf("(");
+                 int end = response.lastIndexOf(")");
+
+                 if (start > 0 && end > start)
+                 {
+                     String operatorListStr = response.substring(start, end + 1);
+                     int currentPos = 0;
+                     while (true)
+                     {
+                         int openParen = operatorListStr.indexOf('(', currentPos);
+                         if (openParen == -1)
+                             break;
+
+                         int closeParen = operatorListStr.indexOf(')', openParen);
+                         if (closeParen == -1)
+                             break;
+
+                         String operatorData = operatorListStr.substring(openParen + 1, closeParen);
+                         NetworkOperator op = {0};
+                         int commaPos = 0;
+                         int startPos = 0;
+                         int fieldIndex = 0;
+
+                         while (true)
+                         {
+                             commaPos = operatorData.indexOf(',', startPos);
+                             String fieldValue;
+
+                             if (commaPos == -1)
+                             {
+                                 fieldValue = operatorData.substring(startPos);
+                             }
+                             else
+                             {
+                                 fieldValue = operatorData.substring(startPos, commaPos);
+                                 startPos = commaPos + 1;
+                             }
+
+                             switch (fieldIndex)
+                             {
+                             case 0: // Status
+                                 op.status = fieldValue.toInt();
+                                 break;
+                             case 1: // Nome longo
+                                 if (fieldValue.startsWith("\"") && fieldValue.endsWith("\""))
+                                 {
+                                     fieldValue = fieldValue.substring(1, fieldValue.length() - 1);
+                                 }
+                                 strncpy(op.long_name, fieldValue.c_str(), sizeof(op.long_name) - 1);
+                                 op.long_name[sizeof(op.long_name) - 1] = '\0';
+                                 break;
+                             case 2: // Nome curto
+                                 if (fieldValue.startsWith("\"") && fieldValue.endsWith("\""))
+                                 {
+                                     fieldValue = fieldValue.substring(1, fieldValue.length() - 1);
+                                 }
+                                 strncpy(op.short_name, fieldValue.c_str(), sizeof(op.short_name) - 1);
+                                 op.short_name[sizeof(op.short_name) - 1] = '\0';
+                                 break;
+                             case 3: // Código numérico
+                                 if (fieldValue.startsWith("\"") && fieldValue.endsWith("\""))
+                                 {
+                                     fieldValue = fieldValue.substring(1, fieldValue.length() - 1);
+                                 }
+                                 strncpy(op.numeric_code, fieldValue.c_str(), sizeof(op.numeric_code) - 1);
+                                 op.numeric_code[sizeof(op.numeric_code) - 1] = '\0';
+                                 break;
+                             case 4: // Tecnologia de acesso
+                                 op.access_tech = fieldValue.toInt();
+                                 break;
+                             }
+
+                             fieldIndex++;
+                             if (commaPos == -1 || fieldIndex >= 5)
+                             {
+                                 break;
+                             }
+                         }
+
+                         if (strlen(op.numeric_code) > 0)
+                         {
+                             this->available_operators.push_back(op);
+                             ESP_LOGI("PARSER", "Operadora: %s (%s), Código: %s, Status: %d, Tecnologia: %d",
+                                      op.long_name, op.short_name, op.numeric_code, op.status, op.access_tech);
+                         }
+                         currentPos = closeParen + 1;
+                     }
+
+                     this->operators_list_updated = true;
+                     this->at_ok = true;
+                     ESP_LOGI("PARSER", "Processadas %d operadoras", this->available_operators.size());
+                 }
+             }
+         }},
         {GSM_OK, [this](const char *data, const char *found)
          {
              ESP_LOGI("PARSER", "AT Successful");
@@ -520,6 +679,34 @@ int A7672SA::send_cmd_to_simcomm(const char *logName, const char *data) //++ Sen
     return txBytes;
 }
 
+/**
+ * @brief Aguarda por uma condição específica com timeout
+ * @param timeout Tempo máximo de espera em ms
+ * @param condition_check Função que verifica a condição desejada
+ * @param operation_name Nome da operação para log
+ * @return true se a condição foi satisfeita, false caso contrário
+ */
+bool A7672SA::wait_for_condition(uint32_t timeout, std::function<bool()> condition_check, const char *operation_name)
+{
+    uint32_t start = millis();
+    ESP_LOGI("WAIT", "Iniciando espera por %s, timeout: %d ms", operation_name, timeout);
+
+    while (!condition_check() && millis() - start < timeout)
+    {
+        const int rxBytes = uart_read_bytes(UART_NUM_1, this->at_response, this->rx_buffer_size, 250 / portTICK_RATE_MS);
+        if (rxBytes > 0)
+        {
+            this->at_response[rxBytes] = 0;
+            this->simcomm_response_parser(this->at_response);
+        }
+        vTaskDelay(10 / portTICK_PERIOD_MS);
+    }
+
+    bool result = condition_check();
+    ESP_LOGI("WAIT", "Espera por %s finalizada: %s", operation_name, result ? "OK" : "FAIL");
+    return result;
+}
+
 bool A7672SA::wait_response(uint32_t timeout)
 {
     this->at_input = false;
@@ -527,17 +714,9 @@ bool A7672SA::wait_response(uint32_t timeout)
     this->at_publish = false;
     this->at_error = false;
     this->http_response = false;
-    uint32_t start = millis();
-    while (!this->at_ok && !this->at_error && millis() - start < timeout)
-    {
-        const int rxBytes = uart_read_bytes(UART_NUM_1, this->at_response, this->rx_buffer_size, 250 / portTICK_RATE_MS);
-        if (rxBytes > 0)
-        {
-            this->at_response[rxBytes] = 0;
-            this->simcomm_response_parser(this->at_response); //++ Call the AT Response Parser Function
-        }
-    }
-    return this->at_ok;
+
+    return wait_for_condition(timeout, [this]()
+                              { return this->at_ok || this->at_error; }, "AT RESPONSE");
 }
 
 bool A7672SA::wait_input(uint32_t timeout)
@@ -547,17 +726,9 @@ bool A7672SA::wait_input(uint32_t timeout)
     this->at_publish = false;
     this->at_error = false;
     this->http_response = false;
-    uint32_t start = millis();
-    while (!this->at_input && !this->at_error && millis() - start < timeout)
-    {
-        const int rxBytes = uart_read_bytes(UART_NUM_1, this->at_response, this->rx_buffer_size, 250 / portTICK_RATE_MS);
-        if (rxBytes > 0)
-        {
-            this->at_response[rxBytes] = 0;
-            this->simcomm_response_parser(this->at_response); //++ Call the AT Response Parser Function
-        }
-    }
-    return this->at_input;
+
+    return wait_for_condition(timeout, [this]()
+                              { return this->at_input || this->at_error; }, "AT INPUT");
 }
 
 bool A7672SA::wait_publish(uint32_t timeout)
@@ -567,17 +738,9 @@ bool A7672SA::wait_publish(uint32_t timeout)
     this->at_publish = false;
     this->at_error = false;
     this->http_response = false;
-    uint32_t start = millis();
-    while (!this->at_publish && !this->at_error && millis() - start < timeout)
-    {
-        const int rxBytes = uart_read_bytes(UART_NUM_1, this->at_response, this->rx_buffer_size, 250 / portTICK_RATE_MS);
-        if (rxBytes > 0)
-        {
-            this->at_response[rxBytes] = 0;
-            this->simcomm_response_parser(this->at_response); //++ Call the AT Response Parser Function
-        }
-    }
-    return this->at_publish;
+
+    return wait_for_condition(timeout, [this]()
+                              { return this->at_publish || this->at_error; }, "MQTT PUBLISH");
 }
 
 bool A7672SA::wait_to_connect(uint32_t timeout)
@@ -588,17 +751,9 @@ bool A7672SA::wait_to_connect(uint32_t timeout)
     this->at_error = false;
     this->http_response = false;
     this->mqtt_connected = false;
-    uint32_t start = millis();
-    while (!this->mqtt_connected && millis() - start < timeout)
-    {
-        const int rxBytes = uart_read_bytes(UART_NUM_1, this->at_response, this->rx_buffer_size, 250 / portTICK_RATE_MS);
-        if (rxBytes > 0)
-        {
-            this->at_response[rxBytes] = 0;
-            this->simcomm_response_parser(this->at_response); //++ Call the AT Response Parser Function
-        }
-    }
-    return this->mqtt_connected;
+
+    return wait_for_condition(timeout, [this]()
+                              { return this->mqtt_connected; }, "MQTT CONNECT");
 }
 
 bool A7672SA::wait_http_response(uint32_t timeout)
@@ -608,17 +763,9 @@ bool A7672SA::wait_http_response(uint32_t timeout)
     this->at_publish = false;
     this->at_error = false;
     this->http_response = false;
-    uint32_t start = millis();
-    while (!this->http_response && millis() - start < timeout)
-    {
-        const int rxBytes = uart_read_bytes(UART_NUM_1, this->at_response, this->rx_buffer_size, 250 / portTICK_RATE_MS);
-        if (rxBytes > 0)
-        {
-            this->at_response[rxBytes] = 0;
-            this->simcomm_response_parser(this->at_response); //++ Call the AT Response Parser Function
-        }
-    }
-    return this->http_response;
+
+    return wait_for_condition(timeout, [this]()
+                              { return this->http_response || this->at_error; }, "HTTP RESPONSE");
 }
 
 bool A7672SA::test_at(uint32_t timeout)
@@ -654,6 +801,31 @@ int A7672SA::signal_quality(uint32_t timeout)
         return signal_quality.toInt();
     }
     return 0;
+}
+
+bool A7672SA::set_operator(NetworkOperator op, uint32_t timeout)
+{
+    if (this->publishing)
+        return false;
+
+    char data[100];
+    sprintf(data, "AT+COPS=0,2,\"%s\",%d" GSM_NL, op.numeric_code, op.access_tech);
+    ESP_LOGI("SET_OPERATOR", "AT+COPS=0,2,\"%s\",%d", op.numeric_code, op.access_tech);
+    this->sendCommand("SET_OPERATOR", data);
+
+    return this->wait_response(timeout);
+}
+
+bool A7672SA::set_network_mode(network_mode mode, uint32_t timeout)
+{
+    if (this->publishing)
+        return false;
+
+    char data[100];
+    sprintf(data, "AT+CNMP=%d" GSM_NL, mode);
+    this->sendCommand("SET_NETWORK_MODE", data);
+
+    return this->wait_response(timeout);
 }
 
 bool A7672SA::set_apn(const char *apn, uint32_t timeout)
@@ -739,6 +911,70 @@ time_t convertToTimestamp(const char *arry)
         timestamp = 0;
 
     return timestamp;
+}
+
+/*
+72400	Nextel
+72401	SISTEER DO BRASIL TELECOMUNICACOES
+72402	TIM
+72403	TIM
+72404	TIM
+72405	Claro
+72406	Vivo
+72410	Vivo
+72411	Vivo
+72415	Sercomtel
+72416	Brasil Telecom GSM
+72417	Correios
+72418	datora
+72423	Vivo
+72424	Amazonia Celular
+72430	Oi
+72431	Oi
+72432	Algar Telecom
+72433	Algar Telecom
+72434	Algar Telecom
+72435	Telcom Telecomunicacoes
+72436	Options Telecomunicacoes
+72437	aeiou
+72438	Claro
+72439	Nextel
+72454	Conecta
+72499	Local
+*/
+/**
+ * @brief Obtém a lista de operadoras de rede disponíveis
+ * @param timeout Tempo máximo de espera pela resposta em ms
+ * @return Vetor com as operadoras de rede encontradas
+ */
+std::vector<NetworkOperator> A7672SA::get_operator_list(uint32_t timeout)
+{
+    if (this->publishing)
+    {
+        ESP_LOGW("GET_OPERATOR_LIST", "Não foi possível executar: publicação em andamento");
+        return this->available_operators;
+    }
+
+    // Limpa a flag de atualização
+    this->operators_list_updated = false;
+
+    // Envia o comando para obter a lista de operadoras
+    this->sendCommand("GET_OPERATOR_LIST", "AT+COPS=?" GSM_NL);
+
+    // Aguarda a resposta com um timeout adequado (60 segundos)
+    bool result = wait_for_condition(timeout, [this]()
+                                     { return this->operators_list_updated || this->at_error; }, "lista de operadoras");
+
+    if (result)
+    {
+        ESP_LOGI("GET_OPERATOR_LIST", "Lista de operadoras atualizada com sucesso");
+    }
+    else
+    {
+        ESP_LOGW("GET_OPERATOR_LIST", "Timeout ao aguardar lista de operadoras");
+    }
+
+    return this->available_operators;
 }
 
 time_t A7672SA::get_ntp_time(uint32_t timeout)
