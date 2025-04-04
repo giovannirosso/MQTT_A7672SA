@@ -2,7 +2,7 @@
  * @file       MQTT_A7672SA.h
  * @author     Giovanni de Rosso Unruh
  * @date       07/2023
- * @revision   1.0.1
+ * @revision   1.0.2
  */
 
 #ifndef MQTT_A7672SA_H_
@@ -196,10 +196,10 @@ public:
     int signal_quality(uint32_t timeout = 1000);
 
     bool set_network_mode(network_mode mode, uint32_t timeout = 1000);
-    std::vector<NetworkOperator> get_operator_list(uint32_t timeout = 10000);
+    std::vector<NetworkOperator> get_operator_list(uint32_t timeout = 60000);
 
     bool set_operator(NetworkOperator op, uint32_t timeout = 1000);
-    bool set_apn(const char *apn, uint32_t timeout = 1000);
+    bool set_apn(const char *apn, const char *user, const char *password, uint32_t timeout = 1000);
     bool set_ntp_server(const char *ntp_server, int time_zone, uint32_t timeout = 1000);
 
     time_t get_ntp_time(uint32_t timeout = 1000);

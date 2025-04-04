@@ -828,7 +828,7 @@ bool A7672SA::set_network_mode(network_mode mode, uint32_t timeout)
     return this->wait_response(timeout);
 }
 
-bool A7672SA::set_apn(const char *apn, uint32_t timeout)
+bool A7672SA::set_apn(const char *apn, const char *user, const char *password, uint32_t timeout)
 {
     if (this->publishing)
         return false;
@@ -838,11 +838,16 @@ bool A7672SA::set_apn(const char *apn, uint32_t timeout)
     this->sendCommand("SET_APN", data);
     if (this->wait_response(timeout))
     {
-        this->sendCommand("SET_APN", "AT+CGACT=1,1" GSM_NL);
+        sprintf(data, "AT+CGATT=1,1,\"%s\",\"%s\"" GSM_NL, password, user);
+        this->sendCommand("SET_APN", data);
         if (this->wait_response(timeout))
         {
-            this->sendCommand("SET_APN", "AT+CREG=1" GSM_NL);
-            return this->wait_response(timeout);
+            this->sendCommand("SET_APN", "AT+CGACT=1,1" GSM_NL);
+            if (this->wait_response(timeout))
+            {
+                this->sendCommand("SET_APN", "AT+CREG=1" GSM_NL);
+                return this->wait_response(timeout);
+            }
         }
     }
     return false;
@@ -955,13 +960,16 @@ std::vector<NetworkOperator> A7672SA::get_operator_list(uint32_t timeout)
         return this->available_operators;
     }
 
-    // Limpa a flag de atualização
     this->operators_list_updated = false;
 
-    // Envia o comando para obter a lista de operadoras
+    if (this->available_operators.size() > 0)
+    {
+        ESP_LOGW("GET_OPERATOR_LIST", "Lista de operadoras já carregada, não é necessário executar novamente");
+        return this->available_operators;
+    }
+
     this->sendCommand("GET_OPERATOR_LIST", "AT+COPS=?" GSM_NL);
 
-    // Aguarda a resposta com um timeout adequado (60 segundos)
     bool result = wait_for_condition(timeout, [this]()
                                      { return this->operators_list_updated || this->at_error; }, "lista de operadoras");
 
