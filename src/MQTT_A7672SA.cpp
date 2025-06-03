@@ -834,7 +834,7 @@ bool A7672SA::set_apn(const char *apn, const char *user, const char *password, u
         return false;
 
     char data[100];
-    sprintf(data, "AT+CGDCONT=1,\"IP\",\"%s\"" GSM_NL, apn);
+    sprintf(data, "AT+CGDCONT=1,\"IPV4V6\",\"%s\"" GSM_NL, apn);
     this->sendCommand("SET_APN", data);
     if (this->wait_response(timeout))
     {
@@ -1118,7 +1118,7 @@ String A7672SA::get_iccid(uint32_t timeout)
 /*
 AT+CGPADDR anwser:
 >
-> +CGPADDR: 1,10.240.199.101
+> +CGPADDR: <cid>,<PDP_addr_IPV4>,<PDP_addr_IPV6>
 >
 > OK
 */
