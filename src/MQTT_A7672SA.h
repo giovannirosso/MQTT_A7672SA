@@ -207,6 +207,7 @@ public:
     String get_imei(uint32_t timeout = 1000);
     String get_iccid(uint32_t timeout = 1000);
     IPAddress get_local_ip(uint32_t timeout = 1000);
+    String get_local_ipv6(uint32_t timeout = 10000);
 
     bool set_ca_cert(const char *ca_cert, const char *ca_name, size_t cert_size, uint32_t timeout = 10000);
     bool mqtt_connect(const char *host, uint16_t port, const char *clientId, bool clean_session = true, const char *username = "", const char *password = "", bool ssl = false, const char *ca_name = "ca.pem", uint16_t keepalive = 60, uint32_t timeout = 10000);

@@ -1119,6 +1119,8 @@ String A7672SA::get_iccid(uint32_t timeout)
 AT+CGPADDR anwser:
 >
 > +CGPADDR: <cid>,<PDP_addr_IPV4>,<PDP_addr_IPV6>
+> EXAMPLE:
+> +CGPADDR: 8,41.3.5.144,254.128.0.0.0.0.0.0.24.69.231.10.121.241.106.179
 >
 > OK
 */
@@ -1131,7 +1133,7 @@ IPAddress A7672SA::get_local_ip(uint32_t timeout)
     if (this->wait_response(timeout))
     {
         String data_string = "";
-        String local_ip_str = "";
+        String ipv4_str = "";
 
         for (int j = 0; j < strlen(this->at_response); j++)
         {
@@ -1140,24 +1142,76 @@ IPAddress A7672SA::get_local_ip(uint32_t timeout)
 
         data_string.trim();
 
-        local_ip_str = data_string.substring(data_string.indexOf(",") + 1, data_string.indexOf("\n") - 1);
+        // Formato esperado: +CGPADDR: 8,41.3.5.144,254.128.0.0.0.0.0.0.24.69.231.10.121.241.106.179
+        // Encontra a primeira vírgula
+        int firstComma = data_string.indexOf(",");
+        if (firstComma < 0)
+            return IPAddress(0, 0, 0, 0);
 
-        ESP_LOGI("GET_LOCAL_IP", "LOCAL_IP: %s", local_ip_str.c_str());
+        // Encontra a segunda vírgula (que separa IPv4 do IPv6)
+        int secondComma = data_string.indexOf(",", firstComma + 1);
 
-        // get the four octets of the IP address
-        int octet1 = local_ip_str.substring(0, local_ip_str.indexOf(".")).toInt();
-        local_ip_str.remove(0, local_ip_str.indexOf(".") + 1);
-        int octet2 = local_ip_str.substring(0, local_ip_str.indexOf(".")).toInt();
-        local_ip_str.remove(0, local_ip_str.indexOf(".") + 1);
-        int octet3 = local_ip_str.substring(0, local_ip_str.indexOf(".")).toInt();
-        local_ip_str.remove(0, local_ip_str.indexOf(".") + 1);
-        int octet4 = local_ip_str.toInt();
+        // Se não houver segunda vírgula, pegamos até o final da linha
+        if (secondComma < 0)
+        {
+            ipv4_str = data_string.substring(firstComma + 1, data_string.indexOf("\n") - 1);
+        }
+        else
+        {
+            // Caso contrário, pegamos da primeira à segunda vírgula
+            ipv4_str = data_string.substring(firstComma + 1, secondComma);
+        }
+
+        ESP_LOGI("GET_LOCAL_IP", "IPv4: %s", ipv4_str.c_str());
+
+        // get the four octets of the IPv4 address
+        int octet1 = ipv4_str.substring(0, ipv4_str.indexOf(".")).toInt();
+        ipv4_str.remove(0, ipv4_str.indexOf(".") + 1);
+        int octet2 = ipv4_str.substring(0, ipv4_str.indexOf(".")).toInt();
+        ipv4_str.remove(0, ipv4_str.indexOf(".") + 1);
+        int octet3 = ipv4_str.substring(0, ipv4_str.indexOf(".")).toInt();
+        ipv4_str.remove(0, ipv4_str.indexOf(".") + 1);
+        int octet4 = ipv4_str.toInt();
 
         IPAddress local_ip(octet1, octet2, octet3, octet4);
-
         return local_ip;
     }
     return IPAddress(0, 0, 0, 0);
+}
+
+String A7672SA::get_local_ipv6(uint32_t timeout)
+{
+    if (this->publishing)
+        return "";
+
+    this->sendCommand("GET_LOCAL_IPV6", "AT+CGPADDR" GSM_NL);
+    if (this->wait_response(timeout))
+    {
+        String data_string = "";
+        String ipv6_str = "";
+
+        for (int j = 0; j < strlen(this->at_response); j++)
+        {
+            data_string += this->at_response[j];
+        }
+
+        data_string.trim();
+
+        // Formato esperado: +CGPADDR: 8,41.3.5.144,254.128.0.0.0.0.0.0.24.69.231.10.121.241.106.179
+        // Precisamos encontrar a segunda vírgula para pegar o IPv6
+        int firstComma = data_string.indexOf(",");
+        if (firstComma < 0) return "";
+        
+        int secondComma = data_string.indexOf(",", firstComma + 1);
+        if (secondComma < 0) return ""; // Não há IPv6
+        
+        // Pega do segundo separador até o final da linha
+        ipv6_str = data_string.substring(secondComma + 1, data_string.indexOf("\n") - 1);
+        
+        ESP_LOGI("GET_LOCAL_IPV6", "IPv6: %s", ipv6_str.c_str());
+        return ipv6_str;
+    }
+    return "";
 }
 
 bool A7672SA::set_ca_cert(const char *ca_cert, const char *ca_name, size_t cert_size, uint32_t timeout)
