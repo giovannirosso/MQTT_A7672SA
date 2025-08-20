@@ -31,7 +31,7 @@
 
 #include <IPAddress.h>
 
-// #define DEBUG_LTE
+#define DEBUG_LTE
 
 #define GSM_PROGMEM
 

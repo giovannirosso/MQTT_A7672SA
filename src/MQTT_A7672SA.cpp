@@ -65,14 +65,14 @@ A7672SA::~A7672SA()
 
     gpio_set_level(this->en_pin, 1);
 
-    ESP_LOGI("DESTRUCTOR", "SIMCOMM Stopped");
+    ESP_LOGV("DESTRUCTOR", "SIMCOMM Stopped");
 }
 
 bool A7672SA::begin()
 {
     gpio_set_direction(this->en_pin, GPIO_MODE_OUTPUT); //++ Set GPIO Pin Directions
 
-    ESP_LOGI("BEGIN", "Enable Pin: %d", this->en_pin);
+    ESP_LOGV("BEGIN", "Enable Pin: %d", this->en_pin);
 
     gpio_set_level(this->en_pin, 1); //++ Restarting Simcomm via ENABLE pin
     vTaskDelay(2000 / portTICK_PERIOD_MS);
@@ -87,7 +87,7 @@ bool A7672SA::begin()
     xTaskCreate(this->rx_taskImpl, "uart_rx_task", configIDLE_TASK_STACK_SIZE * 5, this, configMAX_PRIORITIES - 5, &rxTaskHandle); //++ Create FreeRtos Tasks //todo tamanho da memoria
     xTaskCreate(this->tx_taskImpl, "uart_tx_task", configIDLE_TASK_STACK_SIZE * 5, this, configMAX_PRIORITIES - 6, &txTaskHandle);
 
-    ESP_LOGI("BEGIN", "SIMCOMM Started");
+    ESP_LOGV("BEGIN", "SIMCOMM Started");
     return true;
 }
 
@@ -108,7 +108,7 @@ bool A7672SA::stop()
     vTaskDelete(rxTaskHandle);
     vTaskDelete(txTaskHandle);
 
-    ESP_LOGI("STOP", "SIMCOMM Stopped");
+    ESP_LOGV("STOP", "SIMCOMM Stopped");
     return true;
 }
 
@@ -159,6 +159,15 @@ void A7672SA::tx_task()
     send_cmd_to_simcomm("AT_ATE0", "ATE0" GSM_NL);
     vTaskDelay(500 / portTICK_PERIOD_MS);
 
+    send_cmd_to_simcomm("CMEE", "AT+CMEE=2" GSM_NL); // verbose errors
+    vTaskDelay(500 / portTICK_PERIOD_MS);
+    send_cmd_to_simcomm("CREG=1", "AT+CREG=1" GSM_NL); // URC de registro 2G
+    vTaskDelay(500 / portTICK_PERIOD_MS);
+    send_cmd_to_simcomm("CGREG=1", "AT+CGREG=1" GSM_NL); // URC de registro PS
+    vTaskDelay(500 / portTICK_PERIOD_MS);
+    send_cmd_to_simcomm("CEREG=1", "AT+CEREG=1" GSM_NL); // URC de registro LTE
+    vTaskDelay(500 / portTICK_PERIOD_MS);
+
     // send_cmd_to_simcomm("AT_ATV1", "ATV1" GSM_NL); // error roport
     // vTaskDelay(500 / portTICK_PERIOD_MS);
 
@@ -195,13 +204,15 @@ void A7672SA::rx_task() //++ UART Receive Task
         {
             this->at_response[rxBytes] = 0;
 #ifdef DEBUG_LTE
-            ESP_LOGI(RX_TASK_TAG, "Read %d bytes: '%s'", rxBytes, this->at_response);
+            ESP_LOGV(RX_TASK_TAG, "Read %d bytes: '%s'", rxBytes, this->at_response);
 #endif
             int n_messages = 0;
             char **messages = this->simcom_split_messages(this->at_response, &n_messages);
             for (int i = 0; i < n_messages; i++)
             {
-                ESP_LOGI(RX_TASK_TAG, "Message %d: '%s'", i, messages[i]);
+#ifdef DEBUG_LTE
+                ESP_LOGV(RX_TASK_TAG, "Message %d: '%s'", i, messages[i]);
+#endif
                 this->simcomm_response_parser(messages[i]);
                 free(messages[i]);
             }
@@ -371,7 +382,7 @@ void A7672SA::simcomm_response_parser(const char *data)
     static const std::vector<std::pair<const char *, ResponseHandler>> response_handlers = {
         {"CMQTTCONNECT: 0,0" GSM_NL, [this](const char *data, const char *found)
          {
-             ESP_LOGI("PARSER", "MQTT Connected");
+             ESP_LOGV("PARSER", "MQTT Connected");
              this->mqtt_connected = true;
              mqtt_status status = A7672SA_MQTT_CONNECTED;
              if (this->on_mqtt_status_ != NULL)
@@ -379,7 +390,7 @@ void A7672SA::simcomm_response_parser(const char *data)
          }},
         {"CMQTTSTART: 19" GSM_NL, [this](const char *data, const char *found)
          {
-             ESP_LOGI("PARSER", "fail to start");
+             ESP_LOGV("PARSER", "fail to start");
              this->at_ok = false;
              this->mqtt_connected = false;
              mqtt_status status = A7672SA_MQTT_CLIENT_USED;
@@ -387,33 +398,39 @@ void A7672SA::simcomm_response_parser(const char *data)
                  this->on_mqtt_status_(status);
              this->mqtt_release_client();
          }},
+        {"CPIN: SIM REMOVED" GSM_NL, [this](const char *data, const char *found)
+         {
+             ESP_LOGV("PARSER", "SIM Removed");
+             this->at_error = true;
+             this->at_ok = false;
+         }},
         {"CFUN: 1" GSM_NL, [this](const char *data, const char *found)
          {
-             ESP_LOGI("PARSER", "CFUN: 1");
+             ESP_LOGV("PARSER", "CFUN: 1");
              this->at_ready = true;
          }},
         {"CMQTTPUB: 0,0" GSM_NL, [this](const char *data, const char *found)
          {
-             ESP_LOGI("PARSER", "Publish OK");
+             ESP_LOGV("PARSER", "Publish OK");
              this->at_publish = true;
          }},
         {"CMQTTSUB: 0,0" GSM_NL, [this](const char *data, const char *found)
          {
-             ESP_LOGI("PARSER", "Subscribe OK");
+             ESP_LOGV("PARSER", "Subscribe OK");
          }},
         {GSM_NL ">", [this](const char *data, const char *found)
          {
-             ESP_LOGI("PARSER", "AT Input");
+             ESP_LOGV("PARSER", "AT Input");
              this->at_input = true;
          }},
         {GSM_NL "DOWNLOAD", [this](const char *data, const char *found)
          {
-             ESP_LOGI("PARSER", "AT Input");
+             ESP_LOGV("PARSER", "AT Input");
              this->at_input = true;
          }},
         {GSM_ERROR, [this](const char *data, const char *found)
          {
-             ESP_LOGI("PARSER", "AT ERROR");
+             ESP_LOGV("PARSER", "AT ERROR");
              this->at_error = true;
              this->at_ok = false;
              this->at_input = false;
@@ -422,7 +439,7 @@ void A7672SA::simcomm_response_parser(const char *data)
          }},
         {"CME ERROR:", [this](const char *data, const char *found)
          {
-             ESP_LOGI("PARSER", "AT ERROR");
+             ESP_LOGV("PARSER", "AT ERROR");
              this->at_error = true;
              this->at_ok = false;
              this->at_input = false;
@@ -468,7 +485,7 @@ void A7672SA::simcomm_response_parser(const char *data)
          }},
         {"CMQTTCONNLOST:", [this](const char *data, const char *found)
          {
-             ESP_LOGI("PARSER", "MQTT Disconnected");
+             ESP_LOGV("PARSER", "MQTT Disconnected");
              mqtt_status status = A7672SA_MQTT_DISCONNECTED;
              this->mqtt_connected = false;
              if (this->on_mqtt_status_ != NULL)
@@ -477,7 +494,7 @@ void A7672SA::simcomm_response_parser(const char *data)
          }},
         {"CMQTTDISC:", [this](const char *data, const char *found)
          {
-             ESP_LOGI("PARSER", "MQTT Disconnected");
+             ESP_LOGV("PARSER", "MQTT Disconnected");
              mqtt_status status = A7672SA_MQTT_DISCONNECTED;
              this->mqtt_connected = false;
              if (this->on_mqtt_status_ != NULL)
@@ -486,37 +503,37 @@ void A7672SA::simcomm_response_parser(const char *data)
          }},
         {GSM_NL "PB DONE", [this](const char *data, const char *found)
          {
-             ESP_LOGI("PARSER", "PB DONE");
+             ESP_LOGV("PARSER", "PB DONE");
          }},
         {"HTTPACTION:", [this](const char *data, const char *found)
          {
              int method, errcode, datalen;
              sscanf(found, "HTTPACTION: %d,%d,%d" GSM_NL, &method, &this->http_response_data.http_status_code, &this->http_response_data.http_content_size);
-             ESP_LOGI("PARSER", "METHOD: %d, ERRORCODE: %d, DATALEN: %d", method, this->http_response_data.http_status_code, this->http_response_data.http_content_size);
+             ESP_LOGV("PARSER", "METHOD: %d, ERRORCODE: %d, DATALEN: %d", method, this->http_response_data.http_status_code, this->http_response_data.http_content_size);
              this->http_response = true;
          }},
         {"HTTPPOSTFILE:", [this](const char *data, const char *found)
          {
              int method;
              sscanf(found, "HTTPPOSTFILE: %d,%d,%d" GSM_NL, &method, &this->http_response_data.http_status_code, &this->http_response_data.http_content_size);
-             ESP_LOGI("PARSER", "METHOD: %d, ERRORCODE: %d, DATALEN: %d", method, this->http_response_data.http_status_code, this->http_response_data.http_content_size);
+             ESP_LOGV("PARSER", "METHOD: %d, ERRORCODE: %d, DATALEN: %d", method, this->http_response_data.http_status_code, this->http_response_data.http_content_size);
              this->http_response = true;
          }},
         {"HTTPHEAD:", [this](const char *data, const char *found)
          {
              sscanf(found, "HTTPHEAD: %d" GSM_NL, &this->http_response_data.http_header_size);
-             ESP_LOGI("PARSER", "HEADLEN: %d", this->http_response_data.http_header_size);
+             ESP_LOGV("PARSER", "HEADLEN: %d", this->http_response_data.http_header_size);
              found = strstr(found, "Content-Length:");
              sscanf(found, "Content-Length: %d%*s", &this->http_response_data.http_content_size);
-             ESP_LOGI("PARSER", "CONTENT_LENGTH: %d", this->http_response_data.http_content_size);
+             ESP_LOGV("PARSER", "CONTENT_LENGTH: %d", this->http_response_data.http_content_size);
              found = strstr(found, "etag:");
              sscanf(found, "etag: %s" GSM_NL "%*s", this->http_response_data.http_etag);
-             ESP_LOGI("PARSER", "ETAG: %s", this->http_response_data.http_etag);
+             ESP_LOGV("PARSER", "ETAG: %s", this->http_response_data.http_etag);
              this->http_response = true;
          }},
         {"COPS:", [this](const char *data, const char *found)
          {
-             ESP_LOGI("PARSER", "Recebida resposta do comando COPS");
+             ESP_LOGV("PARSER", "Recebida resposta do comando COPS");
 
              this->available_operators.clear();
 
@@ -605,7 +622,7 @@ void A7672SA::simcomm_response_parser(const char *data)
                          if (strlen(op.numeric_code) > 0)
                          {
                              this->available_operators.push_back(op);
-                             ESP_LOGI("PARSER", "Operadora: %s (%s), Código: %s, Status: %d, Tecnologia: %d",
+                             ESP_LOGV("PARSER", "Operadora: %s (%s), Código: %s, Status: %d, Tecnologia: %d",
                                       op.long_name, op.short_name, op.numeric_code, op.status, op.access_tech);
                          }
                          currentPos = closeParen + 1;
@@ -613,13 +630,13 @@ void A7672SA::simcomm_response_parser(const char *data)
 
                      this->operators_list_updated = true;
                      this->at_ok = true;
-                     ESP_LOGI("PARSER", "Processadas %d operadoras", this->available_operators.size());
+                     ESP_LOGV("PARSER", "Processadas %d operadoras", this->available_operators.size());
                  }
              }
          }},
         {GSM_OK, [this](const char *data, const char *found)
          {
-             ESP_LOGI("PARSER", "AT Successful");
+             ESP_LOGV("PARSER", "AT Successful");
              this->at_ok = true;
          }},
     };
@@ -639,7 +656,7 @@ void A7672SA::simcomm_response_parser(const char *data)
         }
     }
 
-    ESP_LOGI("PARSER", "Unhandled AT Response %s", data); //++ Unhandled AT Response
+    ESP_LOGV("PARSER", "Unhandled AT Response %s", data); //++ Unhandled AT Response
 }
 
 bool A7672SA::restart(uint32_t timeout)
@@ -652,8 +669,8 @@ int A7672SA::send_cmd_to_simcomm(const char *logName, uint8_t *data, int len) //
 {
     const int txBytes = uart_write_bytes(UART_NUM_1, data, len);
 #ifdef DEBUG_LTE
-    ESP_LOGI(logName, "Wrote %d bytes of %d requested", txBytes, len);
-    printf("DATA WROTE BYTES [%s]", logName);
+    ESP_LOGV(logName, "Wrote %d bytes of %d requested", txBytes, len);
+    printf("DATA WROTE BYTES [%s] ", logName);
     for (int i = 0; i < len; i++)
     {
         printf("%02X", data[i]);
@@ -668,8 +685,8 @@ int A7672SA::send_cmd_to_simcomm(const char *logName, const char *data) //++ Sen
     const int len = strlen(data);
     const int txBytes = uart_write_bytes(UART_NUM_1, data, len);
 #ifdef DEBUG_LTE
-    ESP_LOGI(logName, "Wrote %d bytes of %d requested", txBytes, len);
-    printf("DATA WROTE CHARS [%s]", logName);
+    ESP_LOGV(logName, "Wrote %d bytes of %d requested", txBytes, len);
+    printf("DATA WROTE CHARS [%s] ", logName);
     for (int i = 0; i < len; i++)
     {
         printf("%c", data[i]);
@@ -689,7 +706,7 @@ int A7672SA::send_cmd_to_simcomm(const char *logName, const char *data) //++ Sen
 bool A7672SA::wait_for_condition(uint32_t timeout, std::function<bool()> condition_check, const char *operation_name)
 {
     uint32_t start = millis();
-    ESP_LOGI("WAIT", "Iniciando espera por %s, timeout: %d ms", operation_name, timeout);
+    ESP_LOGV("WAIT", "Iniciando espera por %s, timeout: %d ms", operation_name, timeout);
 
     while (!condition_check() && millis() - start < timeout)
     {
@@ -703,7 +720,7 @@ bool A7672SA::wait_for_condition(uint32_t timeout, std::function<bool()> conditi
     }
 
     bool result = condition_check();
-    ESP_LOGI("WAIT", "Espera por %s finalizada: %s", operation_name, result ? "OK" : "FAIL");
+    ESP_LOGV("WAIT", "Espera por %s finalizada: %s", operation_name, result ? "OK" : "FAIL");
     return result;
 }
 
@@ -715,8 +732,17 @@ bool A7672SA::wait_response(uint32_t timeout)
     this->at_error = false;
     this->http_response = false;
 
-    return wait_for_condition(timeout, [this]()
-                              { return this->at_ok || this->at_error; }, "AT RESPONSE");
+    // Wait for either OK or ERROR response
+    bool result = wait_for_condition(timeout, [this]()
+                                     { return this->at_ok || this->at_error; }, "AT RESPONSE");
+
+    // Return false if an error occurred, even if the condition was met
+    if (this->at_error)
+    {
+        return false;
+    }
+
+    return result;
 }
 
 bool A7672SA::wait_input(uint32_t timeout)
@@ -810,7 +836,7 @@ bool A7672SA::set_operator(NetworkOperator op, uint32_t timeout)
 
     char data[100];
     sprintf(data, "AT+COPS=0,2,\"%s\",%d" GSM_NL, op.numeric_code, op.access_tech);
-    ESP_LOGI("SET_OPERATOR", "AT+COPS=0,2,\"%s\",%d", op.numeric_code, op.access_tech);
+    ESP_LOGV("SET_OPERATOR", "AT+COPS=0,2,\"%s\",%d", op.numeric_code, op.access_tech);
     this->sendCommand("SET_OPERATOR", data);
 
     return this->wait_response(timeout);
@@ -834,20 +860,25 @@ bool A7672SA::set_apn(const char *apn, const char *user, const char *password, u
         return false;
 
     char data[100];
-    sprintf(data, "AT+CGDCONT=1,\"IPV4V6\",\"%s\"" GSM_NL, apn);
+    sprintf(data, "AT+CGAUTH=1,1,\"%s\",\"%s\"" GSM_NL, user, password);
     this->sendCommand("SET_APN", data);
     if (this->wait_response(timeout))
     {
-        sprintf(data, "AT+CGATT=1,1,\"%s\",\"%s\"" GSM_NL, password, user);
+        sprintf(data, "AT+CGDCONT=1,\"IPV4V6\",\"%s\"" GSM_NL, apn);
         this->sendCommand("SET_APN", data);
         if (this->wait_response(timeout))
         {
+            // sprintf(data, "AT+CGATT=1,1,\"%s\",\"%s\"" GSM_NL, password, user); //todo
+            // this->sendCommand("SET_APN", data);
+            // if (this->wait_response(timeout))
+            // {
             this->sendCommand("SET_APN", "AT+CGACT=1,1" GSM_NL);
             if (this->wait_response(timeout))
             {
                 this->sendCommand("SET_APN", "AT+CREG=1" GSM_NL);
                 return this->wait_response(timeout);
             }
+            // }
         }
     }
     return false;
@@ -911,7 +942,7 @@ time_t convertToTimestamp(const char *arry)
 
     time_t timestamp = mktime(&timeStruct);
 
-    ESP_LOGI("CONVERT_TO_TIMESTAMP", "Timestamp: %ld", timestamp);
+    ESP_LOGV("CONVERT_TO_TIMESTAMP", "Timestamp: %ld", timestamp);
     if (timestamp < 0)
         timestamp = 0;
 
@@ -956,7 +987,7 @@ std::vector<NetworkOperator> A7672SA::get_operator_list(uint32_t timeout)
 {
     if (this->publishing)
     {
-        ESP_LOGW("GET_OPERATOR_LIST", "Não foi possível executar: publicação em andamento");
+        ESP_LOGV("GET_OPERATOR_LIST", "Não foi possível executar: publicação em andamento");
         return this->available_operators;
     }
 
@@ -964,7 +995,7 @@ std::vector<NetworkOperator> A7672SA::get_operator_list(uint32_t timeout)
 
     if (this->available_operators.size() > 0)
     {
-        ESP_LOGW("GET_OPERATOR_LIST", "Lista de operadoras já carregada, não é necessário executar novamente");
+        ESP_LOGV("GET_OPERATOR_LIST", "Lista de operadoras já carregada, não é necessário executar novamente");
         return this->available_operators;
     }
 
@@ -975,11 +1006,11 @@ std::vector<NetworkOperator> A7672SA::get_operator_list(uint32_t timeout)
 
     if (result)
     {
-        ESP_LOGI("GET_OPERATOR_LIST", "Lista de operadoras atualizada com sucesso");
+        ESP_LOGV("GET_OPERATOR_LIST", "Lista de operadoras atualizada com sucesso");
     }
     else
     {
-        ESP_LOGW("GET_OPERATOR_LIST", "Timeout ao aguardar lista de operadoras");
+        ESP_LOGV("GET_OPERATOR_LIST", "Timeout ao aguardar lista de operadoras");
     }
 
     return this->available_operators;
@@ -1043,7 +1074,7 @@ String A7672SA::get_provider_name(uint32_t timeout)
 
         provider_name = data_string.substring(data_string.indexOf("\"") + 1, data_string.indexOf("\"", data_string.indexOf("\"") + 1));
 
-        ESP_LOGI("GET_PROVIDER_NAME", "PROVIDER_NAME: %s", provider_name.c_str());
+        ESP_LOGV("GET_PROVIDER_NAME", "PROVIDER_NAME: %s", provider_name.c_str());
 
         return provider_name;
     }
@@ -1076,7 +1107,7 @@ String A7672SA::get_imei(uint32_t timeout)
 
         imei = data_string.substring(0, data_string.indexOf("\n") - 1);
 
-        ESP_LOGI("GET_IMEI", "IMEI: %s", imei.c_str());
+        ESP_LOGV("GET_IMEI", "IMEI: %s", imei.c_str());
 
         // validate IMEI
         if (imei.length() == 15)
@@ -1108,7 +1139,7 @@ String A7672SA::get_iccid(uint32_t timeout)
 
         iccid = data_string.substring(data_string.indexOf(":") + 1, data_string.indexOf("\n") - 1);
 
-        ESP_LOGI("GET_ICCID", "ICCID: %s", iccid.c_str());
+        ESP_LOGV("GET_ICCID", "ICCID: %s", iccid.c_str());
 
         return iccid;
     }
@@ -1162,7 +1193,7 @@ IPAddress A7672SA::get_local_ip(uint32_t timeout)
             ipv4_str = data_string.substring(firstComma + 1, secondComma);
         }
 
-        ESP_LOGI("GET_LOCAL_IP", "IPv4: %s", ipv4_str.c_str());
+        ESP_LOGV("GET_LOCAL_IP", "IPv4: %s", ipv4_str.c_str());
 
         // get the four octets of the IPv4 address
         int octet1 = ipv4_str.substring(0, ipv4_str.indexOf(".")).toInt();
@@ -1200,15 +1231,17 @@ String A7672SA::get_local_ipv6(uint32_t timeout)
         // Formato esperado: +CGPADDR: 8,41.3.5.144,254.128.0.0.0.0.0.0.24.69.231.10.121.241.106.179
         // Precisamos encontrar a segunda vírgula para pegar o IPv6
         int firstComma = data_string.indexOf(",");
-        if (firstComma < 0) return "";
-        
+        if (firstComma < 0)
+            return "";
+
         int secondComma = data_string.indexOf(",", firstComma + 1);
-        if (secondComma < 0) return ""; // Não há IPv6
-        
+        if (secondComma < 0)
+            return ""; // Não há IPv6
+
         // Pega do segundo separador até o final da linha
         ipv6_str = data_string.substring(secondComma + 1, data_string.indexOf("\n") - 1);
-        
-        ESP_LOGI("GET_LOCAL_IPV6", "IPv6: %s", ipv6_str.c_str());
+
+        ESP_LOGV("GET_LOCAL_IPV6", "IPv6: %s", ipv6_str.c_str());
         return ipv6_str;
     }
     return "";
@@ -1222,7 +1255,7 @@ bool A7672SA::set_ca_cert(const char *ca_cert, const char *ca_name, size_t cert_
     if (this->wait_input(timeout))
     {
         int tx_bytes = uart_write_bytes(UART_NUM_1, ca_cert, cert_size);
-        ESP_LOGI("SET_CA_CERT", "Wrote %d bytes", tx_bytes);
+        ESP_LOGV("SET_CA_CERT", "Wrote %d bytes", tx_bytes);
         return this->wait_response(timeout);
     }
     return false;
@@ -1322,9 +1355,24 @@ bool A7672SA::mqtt_disconnect(uint32_t timeout)
 
 bool A7672SA::mqtt_publish(const char *topic, uint8_t *data, size_t len, uint16_t qos, uint32_t timeout)
 {
+    if (data == nullptr || len == 0)
+    {
+        ESP_LOGE("MQTT_PUBLISH", "Data is null or length is zero");
+        return false;
+    }
+
+    // for (size_t i = 0; i + 2 < len; ++i)
+    // {
+    //     if (data[i] == 'A' && data[i + 1] == 'T' && data[i + 2] == '+')
+    //     {
+    //         ESP_LOGE("MQTT_PUBLISH", "Payload contains forbidden sequence 'AT+': reject");
+    //         return false;
+    //     }
+    // }
+
     const size_t data_size = strlen(topic) + len + 50;
     char data_string[data_size];
-    ESP_LOGI("MQTT_PUBLISH", "LEN =  %d bytes", len);
+    ESP_LOGV("MQTT_PUBLISH", "LEN =  %d bytes", len);
     sprintf(data_string, "AT+CMQTTPUB=0,\"%s\",%d,%d" GSM_NL, topic, qos, len);
     this->sendCommand("MQTT_PUBLISH_CMD", data_string);
     if (this->wait_input(timeout))
@@ -1352,7 +1400,7 @@ bool A7672SA::mqtt_subscribe_topics(const char *topic[10], int n_topics, uint16_
         if (this->wait_input(timeout))
         {
             int tx_bytes = uart_write_bytes(UART_NUM_1, topic[i], strlen(topic[i]));
-            ESP_LOGI("MQTT_SUBSCRIBE", "Wrote %d bytes", tx_bytes);
+            ESP_LOGV("MQTT_SUBSCRIBE", "Wrote %d bytes", tx_bytes);
             // this->sendCommand("MQTT_SUBSCRIBE", topic[i]);
             this->wait_response(timeout);
         }
