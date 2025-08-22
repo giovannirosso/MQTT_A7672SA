@@ -31,11 +31,13 @@
 
 #include <IPAddress.h>
 
-#define DEBUG_LTE
+// #define DEBUG_LTE
 
 #define GSM_PROGMEM
 
 #define UART_QUEUE_SIZE 10
+
+#define DEFAULT_CID 1
 
 #define GSM_NL "\r\n"
 #define GSM_NM "+"
@@ -127,11 +129,18 @@ private:
 
     struct http_response http_response_data = {0, 0, 0, ""};
 
+    registration_status cs_reg_stat_ = UNKNOWN;  // CREG (CS domain)
+    registration_status ps_reg_stat_ = UNKNOWN;  // CGREG (PS 2G/3G)
+    registration_status eps_reg_stat_ = UNKNOWN; // CEREG (PS LTE/EPS)
+
+    bool pdn_active[11] = {false}; // suporta CIDs 1..10
+
     bool at_ok;
     bool at_error;
     bool at_ready;
     bool at_input;
     bool at_publish;
+    bool silent_mode = false;
     char *at_response;
     uint32_t rx_buffer_size;
     std::vector<NetworkOperator> available_operators;
@@ -139,6 +148,12 @@ private:
 
     void (*on_message_callback_)(mqtt_message &message);
     void (*on_mqtt_status_)(mqtt_status &status);
+    void (*on_ps_reg_event_)(registration_status stat) = nullptr;
+
+    void on_ps_lost_();
+    void apply_creg_(registration_status st);
+    void apply_cgreg_(registration_status st);
+    void apply_cereg_(registration_status st);
 
     void rx_task();
     static void rx_taskImpl(void *pvParameters);
@@ -160,9 +175,9 @@ public:
 
     void RX_LOCK(uint32_t timeout = portMAX_DELAY);
     void RX_UNLOCK();
-    void PUBLISH_LOCK(uint32_t timeout = portMAX_DELAY);
+    bool PUBLISH_LOCK(uint32_t timeout = portMAX_DELAY);
     void PUBLISH_UNLOCK();
-    void REINIT_UART(uint32_t resize = 1024);
+    void REINIT_UART(uint32_t resize = 1024, bool at_ready = true);
     void DEINIT_UART();
 
     void on_message_callback(void (*callback)(mqtt_message &message))
@@ -174,6 +189,33 @@ public:
     {
         on_mqtt_status_ = callback;
     }
+
+    void on_ps_reg_event(void (*callback)(registration_status stat))
+    {
+        on_ps_reg_event_ = callback;
+    }
+
+    bool ps_ready() const
+    { // Dados prontos
+        return (eps_reg_stat_ == REGISTERED_HOME || eps_reg_stat_ == REGISTERED_ROAMING) ||
+               (ps_reg_stat_ == REGISTERED_HOME || ps_reg_stat_ == REGISTERED_ROAMING);
+    }
+
+    bool cs_ready() const
+    { // Voz/SMS prontos
+        return (cs_reg_stat_ == REGISTERED_HOME || cs_reg_stat_ == REGISTERED_ROAMING);
+    }
+
+    registration_status cs_registration() const { return cs_reg_stat_; }
+    registration_status ps_registration() const { return ps_reg_stat_; }
+    registration_status eps_registration() const { return eps_reg_stat_; }
+
+    void handle_cgreg_stat_(registration_status st);
+
+    bool is_pdn_active(int cid = 1) const { return (cid >= 0 && cid < 11) ? pdn_active[cid] : false; }
+
+    /** Set silent mode - se marcado como true, ao religar a uart não enviao os comandos de URC*/
+    void set_silent_mode(bool mode) { silent_mode = mode; }
 
     void sendCommand(const char *log, const char *data, bool publish = false);
     void sendCommand(const char *log, uint8_t *data, int len, bool publish = false);
@@ -194,6 +236,8 @@ public:
     bool test_at(uint32_t timeout = 1000);
     bool sim_ready(uint32_t timeout = 1000);
     int signal_quality(uint32_t timeout = 1000);
+
+    bool ping(const char *host = "www.google.com", uint32_t timeout = 2000);
 
     bool set_network_mode(network_mode mode, uint32_t timeout = 1000);
     std::vector<NetworkOperator> get_operator_list(uint32_t timeout = 60000);

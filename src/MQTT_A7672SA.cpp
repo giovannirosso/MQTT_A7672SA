@@ -79,8 +79,8 @@ bool A7672SA::begin()
     gpio_set_level(this->en_pin, 0);
     vTaskDelay(5000 / portTICK_PERIOD_MS);
 
-    this->rx_guard = xSemaphoreCreateMutex();      //++ Create FreeRtos Semaphore
-    this->publish_guard = xSemaphoreCreateMutex(); //++ Create FreeRtos Semaphore
+    this->rx_guard = xSemaphoreCreateMutex();               //++ Create FreeRtos Semaphore
+    this->publish_guard = xSemaphoreCreateRecursiveMutex(); //++ Recursive Mutex for publish (reentrancy-safe)
 
     uartQueue = xQueueCreate(UART_QUEUE_SIZE, sizeof(commandMessage));
 
@@ -105,15 +105,13 @@ bool A7672SA::stop()
 
     DEINIT_UART();
 
-    vTaskDelete(rxTaskHandle);
-    vTaskDelete(txTaskHandle);
-
     ESP_LOGV("STOP", "SIMCOMM Stopped");
     return true;
 }
 
 void A7672SA::sendCommand(const char *logName, const char *data, bool publish)
 {
+    this->at_ok = false;
     commandMessage message;
     strcpy(message.logName, logName);
     strcpy(message.data, data);
@@ -122,6 +120,7 @@ void A7672SA::sendCommand(const char *logName, const char *data, bool publish)
 
 void A7672SA::sendCommand(const char *logName, uint8_t *data, int len, bool publish)
 {
+    this->at_ok = false;
     commandMessage message;
     strcpy(message.logName, logName);
     memcpy(message.data, data, len);
@@ -156,17 +155,20 @@ void A7672SA::tx_task()
         vTaskDelay(3000 / portTICK_PERIOD_MS);
     }
 
-    send_cmd_to_simcomm("AT_ATE0", "ATE0" GSM_NL);
-    vTaskDelay(500 / portTICK_PERIOD_MS);
+    if (silent_mode == false)
+    {
+        send_cmd_to_simcomm("AT_ATE0", "ATE0" GSM_NL);
+        vTaskDelay(500 / portTICK_PERIOD_MS);
 
-    send_cmd_to_simcomm("CMEE", "AT+CMEE=2" GSM_NL); // verbose errors
-    vTaskDelay(500 / portTICK_PERIOD_MS);
-    send_cmd_to_simcomm("CREG=1", "AT+CREG=1" GSM_NL); // URC de registro 2G
-    vTaskDelay(500 / portTICK_PERIOD_MS);
-    send_cmd_to_simcomm("CGREG=1", "AT+CGREG=1" GSM_NL); // URC de registro PS
-    vTaskDelay(500 / portTICK_PERIOD_MS);
-    send_cmd_to_simcomm("CEREG=1", "AT+CEREG=1" GSM_NL); // URC de registro LTE
-    vTaskDelay(500 / portTICK_PERIOD_MS);
+        send_cmd_to_simcomm("CMEE", "AT+CMEE=2" GSM_NL); // verbose errors
+        vTaskDelay(500 / portTICK_PERIOD_MS);
+        send_cmd_to_simcomm("CREG=1", "AT+CREG=1" GSM_NL); // URC de registro 2G
+        vTaskDelay(500 / portTICK_PERIOD_MS);
+        send_cmd_to_simcomm("CGREG=1", "AT+CGREG=1" GSM_NL); // URC de registro PS
+        vTaskDelay(500 / portTICK_PERIOD_MS);
+        send_cmd_to_simcomm("CEREG=1", "AT+CEREG=1" GSM_NL); // URC de registro LTE
+        vTaskDelay(500 / portTICK_PERIOD_MS);
+    }
 
     // send_cmd_to_simcomm("AT_ATV1", "ATV1" GSM_NL); // error roport
     // vTaskDelay(500 / portTICK_PERIOD_MS);
@@ -238,21 +240,51 @@ void A7672SA::RX_UNLOCK()
         xSemaphoreGive(this->rx_guard);
 }
 
-void A7672SA::PUBLISH_LOCK(uint32_t timeout)
+bool A7672SA::PUBLISH_LOCK(uint32_t timeout) // todo testar
 {
-    if (this->publish_guard != NULL)
-        do
-        {
-            vTaskDelay(10 / portTICK_PERIOD_MS);
-        } while (xSemaphoreTake(this->publish_guard, timeout) != pdPASS);
+    if (this->publish_guard == NULL)
+    {
+        // No guard available, treat as locked
+        this->publishing = true;
+        return true;
+    }
 
-    this->publishing = true;
+    // Convert milliseconds timeout to ticks, guard against overflow
+    TickType_t ticks = (timeout == portMAX_DELAY) ? portMAX_DELAY : pdMS_TO_TICKS(timeout);
+
+    // If we're in the modem RX/TX task context, do not block to avoid deadlocks and asserts
+    TaskHandle_t cur = xTaskGetCurrentTaskHandle();
+    if (cur == rxTaskHandle || cur == txTaskHandle)
+    {
+        ticks = 0; // non-blocking try
+    }
+
+#ifdef DEBUG_LTE
+    TaskHandle_t owner = (this->publish_guard != NULL) ? xSemaphoreGetMutexHolder(this->publish_guard) : NULL;
+    ESP_LOGV("PUBLISH_LOCK", "cur=%p owner=%p ticks=%u", (void *)cur, (void *)owner, (unsigned)ticks);
+#endif
+
+    // Attempt to take the mutex once with the provided timeout
+    if (xSemaphoreTakeRecursive(this->publish_guard, ticks) == pdPASS)
+    {
+        this->publishing = true;
+        return true;
+    }
+
+    // Failed to acquire
+    return false;
 }
 
 void A7672SA::PUBLISH_UNLOCK()
 {
     if (this->publish_guard != NULL)
-        xSemaphoreGive(this->publish_guard);
+    {
+#ifdef DEBUG_LTE
+        TaskHandle_t owner = xSemaphoreGetMutexHolder(this->publish_guard);
+        ESP_LOGV("PUBLISH_UNLOCK", "owner(before)=%p", (void *)owner);
+#endif
+        xSemaphoreGiveRecursive(this->publish_guard);
+    }
 
     this->publishing = false;
 }
@@ -274,9 +306,9 @@ void A7672SA::DEINIT_UART()
     }
 }
 
-void A7672SA::REINIT_UART(uint32_t resize)
+void A7672SA::REINIT_UART(uint32_t resize, bool at_ready)
 {
-    this->at_ready = true;
+    this->at_ready = at_ready;
     this->rx_buffer_size = resize;
 
     const uart_config_t uart_config =
@@ -298,27 +330,6 @@ void A7672SA::REINIT_UART(uint32_t resize)
 
     this->RX_UNLOCK();
 }
-
-// char **A7672SA::simcom_split_messages(const char *data, int *n_messages)
-// {
-//     char **messages = NULL;
-//     *n_messages = 0;
-
-//     char *data_copy = strdup(data);
-//     char *token = strtok(data_copy, GSM_NM);
-//     while (token != NULL)
-//     {
-//         if (strlen(token) > 0)
-//         {
-//             messages = (char **)realloc(messages, (*n_messages + 1) * sizeof(char *));
-//             messages[*n_messages] = strdup(token);
-//             (*n_messages)++;
-//         }
-//         token = strtok(NULL, GSM_NM);
-//     }
-//     free(data_copy);
-//     return messages;
-// }
 
 char **A7672SA::simcom_split_messages(const char *data, int *n_messages)
 {
@@ -372,6 +383,17 @@ char **A7672SA::simcom_split_messages(const char *data, int *n_messages)
     }
     free(data_copy);
     return messages;
+}
+
+static int parse_cid_from_cgev(const char *p)
+{
+    // Procura primeiro número após o prefixo CGEV...
+    while (*p && !(*p >= '0' && *p <= '9'))
+        ++p;
+    int cid = 0;
+    if (*p)
+        cid = atoi(p);
+    return cid;
 }
 
 using ResponseHandler = std::function<void(const char *, const char *)>;
@@ -521,15 +543,60 @@ void A7672SA::simcomm_response_parser(const char *data)
          }},
         {"HTTPHEAD:", [this](const char *data, const char *found)
          {
-             sscanf(found, "HTTPHEAD: %d" GSM_NL, &this->http_response_data.http_header_size);
-             ESP_LOGV("PARSER", "HEADLEN: %d", this->http_response_data.http_header_size);
-             found = strstr(found, "Content-Length:");
-             sscanf(found, "Content-Length: %d%*s", &this->http_response_data.http_content_size);
-             ESP_LOGV("PARSER", "CONTENT_LENGTH: %d", this->http_response_data.http_content_size);
-             found = strstr(found, "etag:");
-             sscanf(found, "etag: %s" GSM_NL "%*s", this->http_response_data.http_etag);
-             ESP_LOGV("PARSER", "ETAG: %s", this->http_response_data.http_etag);
+             // Parse header size
+             int hdr = 0;
+             if (sscanf(found, "HTTPHEAD: %d" GSM_NL, &hdr) == 1)
+             {
+                 this->http_response_data.http_header_size = hdr;
+                 ESP_LOGV("PARSER", "HEADLEN: %d", hdr);
+             }
+
+             // Work on a safe copy for searching headers
+             const char *p = found;
+             // Content-Length (case-insensitive)
+             const char *cl = strstr(p, "Content-Length:");
+             if (!cl)
+             {
+                 cl = strstr(p, "content-length:");
+             }
+             if (cl)
+             {
+                 int clen = 0;
+                 if (sscanf(cl, "Content-Length: %d", &clen) == 1 || sscanf(cl, "content-length: %d", &clen) == 1)
+                 {
+                     this->http_response_data.http_content_size = clen;
+                     ESP_LOGV("PARSER", "CONTENT_LENGTH: %d", clen);
+                 }
+             }
+
+             // ETag (case-insensitive)
+             const char *et = strstr(p, "etag:");
+             if (!et)
+             {
+                 et = strstr(p, "ETag:");
+             }
+             if (et)
+             {
+                 // Copy token after etag:
+                 char tag[sizeof(this->http_response_data.http_etag)] = {0};
+                 if (sscanf(et, "etag: %31s", tag) == 1 || sscanf(et, "ETag: %31s", tag) == 1)
+                 {
+                     strncpy(this->http_response_data.http_etag, tag, sizeof(this->http_response_data.http_etag) - 1);
+                     this->http_response_data.http_etag[sizeof(this->http_response_data.http_etag) - 1] = '\0';
+                     ESP_LOGV("PARSER", "ETAG: %s", this->http_response_data.http_etag);
+                 }
+             }
              this->http_response = true;
+         }},
+        {"CPING:", [this](const char *data, const char *found)
+         {
+             // todo Handle three possible formats
+             // 1) +CPING: <result_type>,<resolved_ip_addr>,<data_packet_size>,<rtt>,<TTL>
+             // 2) +CPING: <result_type>
+             // 3) +CPING: <result_type>,<num_pkts_sent>,<num_pkts_recvd>,<num_pkts_lost>,<min_rtt>,<max_rtt>,<avg_rtt>
+             // We'll try to parse in a robust order: type-only, type-1, type-3.
+             ESP_LOGV("PARSER", "Recebida resposta do comando CPING");
+             this->at_ok = true;
          }},
         {"COPS:", [this](const char *data, const char *found)
          {
@@ -633,6 +700,161 @@ void A7672SA::simcomm_response_parser(const char *data)
                      ESP_LOGV("PARSER", "Processadas %d operadoras", this->available_operators.size());
                  }
              }
+         }}, // --- CGEV: EPS PDN ACT <cid>
+        {"CGEV: EPS PDN ACT", [this](const char *data, const char *found)
+         {
+             int cid = parse_cid_from_cgev(found);
+             if (cid >= 0 && cid < 11)
+                 pdn_active[cid] = true;
+             ESP_LOGV("PARSER", "CGEV: EPS PDN ACT, cid=%d", cid);
+         }},
+        // --- CGEV: EPS PDN DEACT <cid>
+        {"CGEV: EPS PDN DEACT", [this](const char *data, const char *found)
+         {
+             int cid = parse_cid_from_cgev(found);
+             if (cid >= 0 && cid < 11)
+                 pdn_active[cid] = false;
+             ESP_LOGW("PARSER", "CGEV: EPS PDN DEACT, cid=%d", cid);
+             // Sessões de app caíram
+             if (cid == DEFAULT_CID)
+             {
+                 this->mqtt_connected = false;
+                 if (this->on_mqtt_status_)
+                 {
+                     mqtt_status st = A7672SA_MQTT_DISCONNECTED;
+                     this->on_mqtt_status_(st);
+                 }
+             }
+         }},
+        // --- CGEV: NW PDN ACT <cid>
+        {"CGEV: NW PDN ACT", [this](const char *data, const char *found)
+         {
+             int cid = parse_cid_from_cgev(found);
+             if (cid >= 0 && cid < 11)
+                 pdn_active[cid] = true;
+             ESP_LOGV("PARSER", "CGEV: NW PDN ACT, cid=%d", cid);
+         }},
+        // --- CGEV: NW PDN DEACT <cid>
+        {"CGEV: NW PDN DEACT", [this](const char *data, const char *found)
+         {
+             int cid = parse_cid_from_cgev(found);
+             if (cid >= 0 && cid < 11)
+                 pdn_active[cid] = false;
+             ESP_LOGW("PARSER", "CGEV: NW PDN DEACT, cid=%d", cid);
+             if (cid == DEFAULT_CID)
+             {
+                 this->mqtt_connected = false;
+                 if (this->on_mqtt_status_)
+                 {
+                     mqtt_status st = A7672SA_MQTT_DISCONNECTED;
+                     this->on_mqtt_status_(st);
+                 }
+             }
+         }},
+        // --- CGEV: ME DEACT
+        {"CGEV: ME DEACT", [this](const char *data, const char *found)
+         {
+             // Conservador: marcar todos CIDs como inativos //todo testar
+             for (int i = 0; i < 11; i++)
+                 pdn_active[i] = false;
+             ESP_LOGW("PARSER", "CGEV: ME DEACT (desativacao local do(s) PDN)");
+             this->mqtt_connected = false;
+             if (this->on_mqtt_status_)
+             {
+                 mqtt_status st = A7672SA_MQTT_DISCONNECTED;
+                 this->on_mqtt_status_(st);
+             }
+         }},
+        // --- CGEV: ME DETACH
+        {"CGEV: ME DETACH", [this](const char *data, const char *found)
+         {
+             for (int i = 0; i < 11; i++)
+                 pdn_active[i] = false;
+             ESP_LOGE("PARSER", "CGEV: ME DETACH (module detach)");
+             this->mqtt_connected = false;
+             if (this->on_mqtt_status_)
+             {
+                 mqtt_status st = A7672SA_MQTT_DISCONNECTED;
+                 this->on_mqtt_status_(st);
+             }
+         }},
+        // -
+        {"CGEV: ME PDN ACT", [this](const char *data, const char *found)
+         {
+             int cid = parse_cid_from_cgev(found);
+             if (cid >= 0 && cid < 11)
+                 pdn_active[cid] = true;
+             ESP_LOGV("PARSER", "CGEV: ME PDN ACT, cid=%d", cid);
+         }},
+        {"CGEV: ME PDN DEACT", [this](const char *data, const char *found)
+         {
+             int cid = parse_cid_from_cgev(found);
+             if (cid >= 0 && cid < 11)
+                 pdn_active[cid] = false;
+             ESP_LOGW("PARSER", "CGEV: ME PDN DEACT, cid=%d", cid);
+             if (cid == DEFAULT_CID)
+             {
+                 this->mqtt_connected = false;
+                 if (this->on_mqtt_status_)
+                 {
+                     mqtt_status st = A7672SA_MQTT_DISCONNECTED;
+                     this->on_mqtt_status_(st);
+                 }
+             }
+         }},
+        {"CREG: ", [this](const char *data, const char *found)
+         {
+             // Aceita "CREG: <stat>" ou "CREG: <n>,<stat>"
+             int stat = -1, n = -1;
+             if (sscanf(found, "CREG: %d,%d", &n, &stat) != 2)
+             {
+                 sscanf(found, "CREG: %d", &stat);
+             }
+             if (stat >= 0 && stat <= 7)
+             {
+                 apply_creg_(static_cast<registration_status>(stat));
+                 ESP_LOGV("PARSER", "CREG stat=%d", stat);
+             }
+             else
+             {
+                 ESP_LOGW("PARSER", "CREG stat invalido: '%s'", found);
+             }
+         }},
+        {"CEREG: ", [this](const char *data, const char *found)
+         {
+             int stat = -1, n = -1;
+             if (sscanf(found, "CEREG: %d,%d", &n, &stat) != 2)
+             {
+                 sscanf(found, "CEREG: %d", &stat);
+             }
+             // idem: sanitize valores estendidos
+             if (stat >= 0 && stat <= 7)
+             {
+                 apply_cereg_(static_cast<registration_status>(stat));
+             }
+             else
+             {
+                 apply_cereg_(UNKNOWN);
+             }
+             ESP_LOGV("PARSER", "CEREG stat=%d", stat);
+         }},
+        {"CGREG: ", [this](const char *data, const char *found)
+         {
+             int stat = -1, n = -1;
+             if (sscanf(found, "CGREG: %d,%d", &n, &stat) != 2)
+             {
+                 sscanf(found, "CGREG: %d", &stat);
+             }
+             // Alguns firmwares emitem 10/11 etc.; trate >7 como UNKNOWN
+             if (stat >= 0 && stat <= 7)
+             {
+                 apply_cgreg_(static_cast<registration_status>(stat));
+             }
+             else
+             {
+                 apply_cgreg_(UNKNOWN);
+             }
+             ESP_LOGV("PARSER", "CGREG stat=%d", stat);
          }},
         {GSM_OK, [this](const char *data, const char *found)
          {
@@ -657,6 +879,46 @@ void A7672SA::simcomm_response_parser(const char *data)
     }
 
     ESP_LOGV("PARSER", "Unhandled AT Response %s", data); //++ Unhandled AT Response
+}
+
+void A7672SA::on_ps_lost_()
+{
+    // Qualquer queda de PS implica derrubar app-layer (MQTT/HTTP)
+    if (mqtt_connected)
+    {
+        mqtt_connected = false;
+        if (on_mqtt_status_)
+        {
+            mqtt_status s = A7672SA_MQTT_DISCONNECTED;
+            on_mqtt_status_(s);
+        }
+    }
+    // aqui você pode acordar sua task de reconexão para refazer CGATT/CGACT/TCP/MQTT com backoff
+}
+
+void A7672SA::apply_creg_(registration_status st)
+{
+    bool before = cs_ready();
+    cs_reg_stat_ = st;
+    (void)before; // hoje CS não derruba MQTT, mas deixe aqui se um dia precisar reagir
+}
+
+void A7672SA::apply_cgreg_(registration_status st)
+{
+    bool before = ps_ready();
+    ps_reg_stat_ = st;
+    bool after = ps_ready();
+    if (before && !after)
+        on_ps_lost_();
+}
+
+void A7672SA::apply_cereg_(registration_status st)
+{
+    bool before = ps_ready();
+    eps_reg_stat_ = st;
+    bool after = ps_ready();
+    if (before && !after)
+        on_ps_lost_();
 }
 
 bool A7672SA::restart(uint32_t timeout)
@@ -727,10 +989,13 @@ bool A7672SA::wait_for_condition(uint32_t timeout, std::function<bool()> conditi
 bool A7672SA::wait_response(uint32_t timeout)
 {
     this->at_input = false;
-    this->at_ok = false;
+    // this->at_ok = false;
     this->at_publish = false;
     this->at_error = false;
     this->http_response = false;
+
+    if (this->at_ok)
+        return true;
 
     // Wait for either OK or ERROR response
     bool result = wait_for_condition(timeout, [this]()
@@ -747,11 +1012,14 @@ bool A7672SA::wait_response(uint32_t timeout)
 
 bool A7672SA::wait_input(uint32_t timeout)
 {
-    this->at_input = false;
+    // this->at_input = false;
     this->at_ok = false;
     this->at_publish = false;
     this->at_error = false;
     this->http_response = false;
+
+    if (this->at_input)
+        return true;
 
     return wait_for_condition(timeout, [this]()
                               { return this->at_input || this->at_error; }, "AT INPUT");
@@ -761,9 +1029,12 @@ bool A7672SA::wait_publish(uint32_t timeout)
 {
     this->at_input = false;
     this->at_ok = false;
-    this->at_publish = false;
+    // this->at_publish = false;
     this->at_error = false;
     this->http_response = false;
+
+    if (this->at_publish)
+        return true;
 
     return wait_for_condition(timeout, [this]()
                               { return this->at_publish || this->at_error; }, "MQTT PUBLISH");
@@ -776,7 +1047,10 @@ bool A7672SA::wait_to_connect(uint32_t timeout)
     this->at_publish = false;
     this->at_error = false;
     this->http_response = false;
-    this->mqtt_connected = false;
+    // this->mqtt_connected = false;
+
+    if (this->mqtt_connected)
+        return true;
 
     return wait_for_condition(timeout, [this]()
                               { return this->mqtt_connected; }, "MQTT CONNECT");
@@ -788,7 +1062,10 @@ bool A7672SA::wait_http_response(uint32_t timeout)
     this->at_ok = false;
     this->at_publish = false;
     this->at_error = false;
-    this->http_response = false;
+    // this->http_response = false;
+
+    if (this->http_response)
+        return true;
 
     return wait_for_condition(timeout, [this]()
                               { return this->http_response || this->at_error; }, "HTTP RESPONSE");
@@ -859,59 +1136,57 @@ bool A7672SA::set_apn(const char *apn, const char *user, const char *password, u
     if (this->publishing)
         return false;
 
+    this->sendCommand("SET_APN", "AT+CREG=1" GSM_NL);
+    this->wait_response(timeout);
+    this->sendCommand("SET_APN", "AT+CEREG=1" GSM_NL);
+    this->wait_response(timeout);
+    this->sendCommand("SET_APN", "AT+CGREG=1" GSM_NL);
+    this->wait_response(timeout);
+
     char data[100];
-    sprintf(data, "AT+CGAUTH=1,1,\"%s\",\"%s\"" GSM_NL, user, password);
+    sprintf(data, "AT+CGDCONT=1,\"IPV4V6\",\"%s\"" GSM_NL, apn);
     this->sendCommand("SET_APN", data);
     if (this->wait_response(timeout))
     {
-        sprintf(data, "AT+CGDCONT=1,\"IPV4V6\",\"%s\"" GSM_NL, apn);
+        sprintf(data, "AT+CGAUTH=1,1,\"%s\",\"%s\"" GSM_NL, user, password);
         this->sendCommand("SET_APN", data);
         if (this->wait_response(timeout))
         {
-            // sprintf(data, "AT+CGATT=1,1,\"%s\",\"%s\"" GSM_NL, password, user); //todo
-            // this->sendCommand("SET_APN", data);
-            // if (this->wait_response(timeout))
-            // {
-            this->sendCommand("SET_APN", "AT+CGACT=1,1" GSM_NL);
+            sprintf(data, "AT+CGATT=1" GSM_NL);
+            this->sendCommand("SET_APN", data);
             if (this->wait_response(timeout))
             {
-                this->sendCommand("SET_APN", "AT+CREG=1" GSM_NL);
+                this->sendCommand("SET_APN", "AT+CGACT=1,1" GSM_NL);
                 return this->wait_response(timeout);
             }
-            // }
         }
     }
     return false;
 }
 
-bool A7672SA::wait_network(uint32_t timeout)
+bool A7672SA::wait_network(uint32_t timeout_ms)
 {
     if (this->publishing)
         return false;
 
-    this->sendCommand("WAIT_NETWORK", "AT+CREG?" GSM_NL);
-    if (this->wait_response(timeout))
+    auto ready = [this]()
+    { return ps_ready(); };
+
+    // Fallback opcional: se tudo UNKNOWN logo após boot, faça UMA consulta
+    if (!ready())
     {
-        String data_string = "";
-        String network_status = "";
-
-        for (int j = 0; j < strlen(this->at_response); j++)
+        if (ps_registration() == UNKNOWN && eps_registration() == UNKNOWN)
         {
-            data_string += this->at_response[j];
-        }
-
-        network_status = data_string.substring(data_string.indexOf(",") + 1, data_string.indexOf(",", data_string.indexOf(",") + 1));
-
-        if (network_status.toInt() == REGISTERED_HOME || network_status.toInt() == REGISTERED_ROAMING)
-        {
-            return true;
-        }
-        else
-        {
-            return false;
+            sendCommand("WAIT_NETWORK", "AT+CGREG?" GSM_NL);
+            (void)wait_response(2000); // seu parser já aplicará o estado
+            if (!ready())
+            {
+                sendCommand("WAIT_NETWORK", "AT+CEREG?" GSM_NL);
+                (void)wait_response(2000);
+            }
         }
     }
-    return false;
+    return wait_for_condition(timeout_ms, ready, "wait_network(PS)");
 }
 
 bool A7672SA::set_ntp_server(const char *ntp_server, int time_zone, uint32_t timeout)
@@ -1250,6 +1525,7 @@ String A7672SA::get_local_ipv6(uint32_t timeout)
 bool A7672SA::set_ca_cert(const char *ca_cert, const char *ca_name, size_t cert_size, uint32_t timeout)
 {
     char data[100];
+    this->at_input = false;
     sprintf(data, "AT+CCERTDOWN=\"%s\",%d" GSM_NL, ca_name, cert_size);
     this->sendCommand("SET_CA_CERT", data);
     if (this->wait_input(timeout))
@@ -1300,6 +1576,7 @@ bool A7672SA::mqtt_connect(const char *host, uint16_t port, const char *clientId
                         {
                             sprintf(data, "AT+CMQTTCONNECT=0,\"tcp://%s:%d\",%d,%d,\"%s\",\"%s\"" GSM_NL, host, port, keepalive, clean_session, username, password);
                         }
+                        this->mqtt_connected = false;
                         this->sendCommand("MQTT_CONNECT", data);
                         bool result = this->wait_to_connect(timeout);
                         return result;
@@ -1332,6 +1609,7 @@ bool A7672SA::mqtt_connect(const char *host, uint16_t port, const char *clientId
                 {
                     sprintf(data, "AT+CMQTTCONNECT=0,\"tcp://%s:%d\",%d,%d,\"%s\",\"%s\"" GSM_NL, host, port, keepalive, clean_session, username, password);
                 }
+                this->mqtt_connected = false;
                 this->sendCommand("MQTT_CONNECT", data);
                 bool result = this->wait_to_connect(timeout);
                 return result;
@@ -1373,6 +1651,9 @@ bool A7672SA::mqtt_publish(const char *topic, uint8_t *data, size_t len, uint16_
     const size_t data_size = strlen(topic) + len + 50;
     char data_string[data_size];
     ESP_LOGV("MQTT_PUBLISH", "LEN =  %d bytes", len);
+
+    this->at_publish = false;
+    this->at_input = false;
     sprintf(data_string, "AT+CMQTTPUB=0,\"%s\",%d,%d" GSM_NL, topic, qos, len);
     this->sendCommand("MQTT_PUBLISH_CMD", data_string);
     if (this->wait_input(timeout))
@@ -1395,6 +1676,7 @@ bool A7672SA::mqtt_subscribe_topics(const char *topic[10], int n_topics, uint16_
     {
         const size_t data_size = strlen(topic[i]) + 50;
         char data_string[data_size];
+        this->at_input = false;
         sprintf(data_string, "AT+CMQTTSUBTOPIC=0,%d,%d" GSM_NL, strlen(topic[i]), qos);
         this->sendCommand("MQTT_SUBSCRIBE", data_string);
         if (this->wait_input(timeout))
@@ -1434,6 +1716,32 @@ bool A7672SA::is_ready()
 bool A7672SA::mqtt_release_client(uint32_t timeout)
 {
     this->sendCommand("MQTT_RELEASE_CLIENT", "AT+CMQTTREL=0" GSM_NL);
+    return this->wait_response(timeout);
+}
+
+/*
+AT+CPING=<dest_addr>,<dest_addr_type>[,<num_pings>[,<data_packet_size>[,<interval_time>[,<wait_time>[,<TTL>]]]]]
+EXAMPLE:
+AT+CPING="www.baidu.com",1,4,64,1000,10000,255
+*/
+bool A7672SA::ping(const char *host, uint32_t timeout)
+{
+    if (this->publishing)
+        return false;
+
+    if (!this->ps_ready())
+    {
+        if (!this->wait_network(15000))
+        {
+            ESP_LOGE("PING", "PS não pronto (sem registro em dados)");
+            return false;
+        }
+    }
+
+    char data[128];
+    sprintf(data, "AT+CPING=\"%s\",1,2,64,1000,2000,255" GSM_NL, host);
+
+    this->sendCommand("PING", data);
     return this->wait_response(timeout);
 }
 
@@ -1493,10 +1801,12 @@ uint32_t A7672SA::http_request(const char *url, HTTP_METHOD method, bool save_to
         {
             if (method == HTTP_METHOD::POST)
             {
+                this->at_input = false;
                 sprintf(cmd, "AT+HTTPDATA=%d,%d" GSM_NL, size, timeout);
                 this->sendCommand("HTTP_REQUEST", cmd);
                 if (this->wait_input(timeout))
                 {
+                    this->at_ok = false;
                     this->send_cmd_to_simcomm("HTTP_REQUEST", (byte *)data_post, size);
                     if (this->wait_response(timeout))
                     {
@@ -1505,10 +1815,12 @@ uint32_t A7672SA::http_request(const char *url, HTTP_METHOD method, bool save_to
                 }
             }
 
+            this->http_response = false;
             sprintf(cmd, "AT+HTTPACTION=%d" GSM_NL, method);
             this->sendCommand("HTTP_REQUEST", cmd);
             if (this->wait_http_response(recv_timeout * 1000))
             {
+                this->http_response = false;
                 this->sendCommand("HTTP_REQUEST", "AT+HTTPHEAD" GSM_NL);
                 this->wait_http_response(timeout);
 
@@ -1586,10 +1898,12 @@ uint32_t A7672SA::http_request_file(const char *url, HTTP_METHOD method, const c
         {
             if (method == HTTP_METHOD::POST)
             {
+                this->at_input = false;
                 sprintf(cmd, "AT+HTTPDATA=%d,%d" GSM_NL, size, timeout);
                 this->sendCommand("HTTP_REQUEST", cmd);
                 if (this->wait_input(timeout))
                 {
+                    this->at_ok = false;
                     this->send_cmd_to_simcomm("HTTP_REQUEST", (byte *)data_post, size);
                     if (this->wait_response(timeout))
                     {
@@ -1597,11 +1911,12 @@ uint32_t A7672SA::http_request_file(const char *url, HTTP_METHOD method, const c
                     }
                 }
             }
-
+            this->http_response = false;
             sprintf(cmd, "AT+HTTPPOSTFILE=\"%s\",1,%d,1" GSM_NL, filename, method);
             this->sendCommand("HTTP_REQUEST", cmd);
             if (this->wait_http_response(recv_timeout * 1000))
             {
+                this->http_response = false;
                 this->sendCommand("HTTP_REQUEST", "AT+HTTPHEAD" GSM_NL);
                 this->wait_http_response(timeout);
 
@@ -1644,7 +1959,7 @@ size_t A7672SA::fs_read(size_t read_size, uint8_t *buffer, uint32_t timeout)
         this->at_response[rxBytes] = 0;
 
         char *result = strstr(this->at_response, "CONNECT");
-        if (*result == NULL)
+        if (result == NULL)
         {
             return -1;
         }
@@ -1680,7 +1995,7 @@ size_t A7672SA::http_read_response(uint8_t *buffer, size_t read_size, size_t off
     {
         this->at_response[rxBytes] = 0;
         char *result = strstr(this->at_response, "+HTTPREAD");
-        if (*result == NULL)
+        if (result == NULL)
         {
             return -1;
         }
