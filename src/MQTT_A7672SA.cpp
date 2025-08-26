@@ -111,6 +111,9 @@ bool A7672SA::stop()
 
 void A7672SA::sendCommand(const char *logName, const char *data, bool publish)
 {
+#ifdef DEBUG_LTE
+    ESP_LOGV("SEND_COMMAND", "ok:%d", this->at_ok);
+#endif
     this->at_ok = false;
     commandMessage message;
     strcpy(message.logName, logName);
@@ -120,6 +123,9 @@ void A7672SA::sendCommand(const char *logName, const char *data, bool publish)
 
 void A7672SA::sendCommand(const char *logName, uint8_t *data, int len, bool publish)
 {
+#ifdef DEBUG_LTE
+    ESP_LOGV("SEND_COMMAND", "ok:%d", this->at_ok);
+#endif
     this->at_ok = false;
     commandMessage message;
     strcpy(message.logName, logName);
@@ -1007,6 +1013,8 @@ bool A7672SA::wait_response(uint32_t timeout)
         return false;
     }
 
+    this->at_ok = false;
+
     return result;
 }
 
@@ -1021,8 +1029,17 @@ bool A7672SA::wait_input(uint32_t timeout)
     if (this->at_input)
         return true;
 
-    return wait_for_condition(timeout, [this]()
-                              { return this->at_input || this->at_error; }, "AT INPUT");
+    bool result = wait_for_condition(timeout, [this]()
+                                     { return this->at_input || this->at_error; }, "AT INPUT");
+
+    if (this->at_error)
+    {
+        return false;
+    }
+
+    this->at_input = false;
+
+    return result;
 }
 
 bool A7672SA::wait_publish(uint32_t timeout)
@@ -1036,8 +1053,16 @@ bool A7672SA::wait_publish(uint32_t timeout)
     if (this->at_publish)
         return true;
 
-    return wait_for_condition(timeout, [this]()
-                              { return this->at_publish || this->at_error; }, "MQTT PUBLISH");
+    bool result = wait_for_condition(timeout, [this]()
+                                     { return this->at_publish || this->at_error; }, "MQTT PUBLISH");
+    if (this->at_error)
+    {
+        return false;
+    }
+
+    this->at_publish = false;
+
+    return result;
 }
 
 bool A7672SA::wait_to_connect(uint32_t timeout)
@@ -1062,13 +1087,22 @@ bool A7672SA::wait_http_response(uint32_t timeout)
     this->at_ok = false;
     this->at_publish = false;
     this->at_error = false;
-    // this->http_response = false;
+    this->http_response = false;
 
     if (this->http_response)
         return true;
 
-    return wait_for_condition(timeout, [this]()
-                              { return this->http_response || this->at_error; }, "HTTP RESPONSE");
+    bool result = wait_for_condition(timeout, [this]()
+                                     { return this->http_response || this->at_error; }, "HTTP RESPONSE");
+
+    if (this->at_error)
+    {
+        return false;
+    }
+
+    this->http_response = false;
+
+    return result;
 }
 
 bool A7672SA::test_at(uint32_t timeout)
@@ -1639,14 +1673,15 @@ bool A7672SA::mqtt_publish(const char *topic, uint8_t *data, size_t len, uint16_
         return false;
     }
 
-    // for (size_t i = 0; i + 2 < len; ++i)
-    // {
-    //     if (data[i] == 'A' && data[i + 1] == 'T' && data[i + 2] == '+')
-    //     {
-    //         ESP_LOGE("MQTT_PUBLISH", "Payload contains forbidden sequence 'AT+': reject");
-    //         return false;
-    //     }
-    // }
+    // Check for forbidden sequences "AT" //todo testar
+    for (size_t i = 0; i + 2 < len; ++i)
+    {
+        if (data[i] == 'A' && data[i + 1] == 'T')
+        {
+            ESP_LOGE("MQTT_PUBLISH", "Payload contains forbidden sequence 'AT': reject");
+            return false;
+        }
+    }
 
     const size_t data_size = strlen(topic) + len + 50;
     char data_string[data_size];
@@ -1801,6 +1836,7 @@ uint32_t A7672SA::http_request(const char *url, HTTP_METHOD method, bool save_to
         {
             if (method == HTTP_METHOD::POST)
             {
+                ESP_LOGV("HTTP_REQUEST", "Sending HTTP POST request");
                 this->at_input = false;
                 sprintf(cmd, "AT+HTTPDATA=%d,%d" GSM_NL, size, timeout);
                 this->sendCommand("HTTP_REQUEST", cmd);
@@ -1815,12 +1851,13 @@ uint32_t A7672SA::http_request(const char *url, HTTP_METHOD method, bool save_to
                 }
             }
 
-            this->http_response = false;
+            ESP_LOGV("HTTP_REQUEST", "Sending HTTP request, http_response:%d", this->http_response);
+            // this->http_response = false;
             sprintf(cmd, "AT+HTTPACTION=%d" GSM_NL, method);
             this->sendCommand("HTTP_REQUEST", cmd);
             if (this->wait_http_response(recv_timeout * 1000))
             {
-                this->http_response = false;
+                // this->http_response = false;
                 this->sendCommand("HTTP_REQUEST", "AT+HTTPHEAD" GSM_NL);
                 this->wait_http_response(timeout);
 
@@ -1896,8 +1933,10 @@ uint32_t A7672SA::http_request_file(const char *url, HTTP_METHOD method, const c
         this->sendCommand("HTTP_REQUEST", cmd);
         if (this->wait_response(timeout))
         {
+            ESP_LOGV("HTTP_REQUEST", "Method: %d", method);
             if (method == HTTP_METHOD::POST)
             {
+                ESP_LOGV("HTTP_REQUEST", "Sending HTTP POST request");
                 this->at_input = false;
                 sprintf(cmd, "AT+HTTPDATA=%d,%d" GSM_NL, size, timeout);
                 this->sendCommand("HTTP_REQUEST", cmd);
@@ -1911,12 +1950,13 @@ uint32_t A7672SA::http_request_file(const char *url, HTTP_METHOD method, const c
                     }
                 }
             }
-            this->http_response = false;
+            ESP_LOGV("HTTP_REQUEST", "Sending HTTP GET/POSTFILE request");
+            // this->http_response = false;
             sprintf(cmd, "AT+HTTPPOSTFILE=\"%s\",1,%d,1" GSM_NL, filename, method);
             this->sendCommand("HTTP_REQUEST", cmd);
             if (this->wait_http_response(recv_timeout * 1000))
             {
-                this->http_response = false;
+                // this->http_response = false;
                 this->sendCommand("HTTP_REQUEST", "AT+HTTPHEAD" GSM_NL);
                 this->wait_http_response(timeout);
 
