@@ -206,8 +206,15 @@ void A7672SA::rx_task() //++ UART Receive Task
 
     while (1)
     {
-        this->RX_LOCK();
-        const int rxBytes = uart_read_bytes(UART_NUM_1, this->at_response, this->rx_buffer_size, 100 / portTICK_RATE_MS);
+        // Tente pegar o mutex sem bloquear; se ocupado por outra tarefa (ex.: OTA), ceda e tente depois.
+        if (this->rx_guard && xSemaphoreTake(this->rx_guard, 0) != pdPASS)
+        {
+            vTaskDelay(10 / portTICK_PERIOD_MS);
+            continue;
+        }
+        // Evitar bloqueio aqui para não interagir com priority inheritance de mutexes internos do driver UART
+        // e reduzir chance do assert vTaskPriorityDisinheritAfterTimeout durante contenção.
+        const int rxBytes = uart_read_bytes(UART_NUM_1, this->at_response, this->rx_buffer_size, 0);
         if (rxBytes > 0)
         {
             this->at_response[rxBytes] = 0;
@@ -226,7 +233,8 @@ void A7672SA::rx_task() //++ UART Receive Task
             }
             free(messages);
         }
-        this->RX_UNLOCK();
+        if (this->rx_guard)
+            xSemaphoreGive(this->rx_guard);
         vTaskDelay(10 / portTICK_PERIOD_MS);
     }
     free(this->at_response);
@@ -583,9 +591,9 @@ void A7672SA::simcomm_response_parser(const char *data)
              }
              if (et)
              {
-                 // Copy token after etag:
+                 // Copy token after etag: "4094025aeef973f79d646563d890ba49" 
                  char tag[sizeof(this->http_response_data.http_etag)] = {0};
-                 if (sscanf(et, "etag: %31s", tag) == 1 || sscanf(et, "ETag: %31s", tag) == 1)
+                 if (sscanf(et, "etag: \"%32s\"", tag) == 1 || sscanf(et, "ETag: \"%32s\"", tag) == 1)
                  {
                      strncpy(this->http_response_data.http_etag, tag, sizeof(this->http_response_data.http_etag) - 1);
                      this->http_response_data.http_etag[sizeof(this->http_response_data.http_etag) - 1] = '\0';

@@ -62,7 +62,7 @@ struct http_response
     uint32_t http_status_code;
     size_t http_header_size;
     size_t http_content_size;
-    char http_etag[32];
+    char http_etag[33];
 };
 
 struct NetworkOperator
