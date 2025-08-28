@@ -84,8 +84,8 @@ bool A7672SA::begin()
 
     uartQueue = xQueueCreate(UART_QUEUE_SIZE, sizeof(commandMessage));
 
-    xTaskCreate(this->rx_taskImpl, "uart_rx_task", configIDLE_TASK_STACK_SIZE * 5, this, configMAX_PRIORITIES - 5, &rxTaskHandle); //++ Create FreeRtos Tasks //todo tamanho da memoria
-    xTaskCreate(this->tx_taskImpl, "uart_tx_task", configIDLE_TASK_STACK_SIZE * 5, this, configMAX_PRIORITIES - 6, &txTaskHandle);
+    xTaskCreate(this->rx_taskImpl, "uart_rx_task", configIDLE_TASK_STACK_SIZE * 12, this, configMAX_PRIORITIES - 5, &rxTaskHandle); //++ Increase stack to avoid overflow
+    xTaskCreate(this->tx_taskImpl, "uart_tx_task", configIDLE_TASK_STACK_SIZE * 6, this, configMAX_PRIORITIES - 6, &txTaskHandle);
 
     ESP_LOGV("BEGIN", "SIMCOMM Started");
     return true;
@@ -339,8 +339,8 @@ void A7672SA::REINIT_UART(uint32_t resize, bool at_ready)
     ESP_ERROR_CHECK(uart_set_pin(UART_NUM_1, tx_pin, rx_pin, UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE));
     ESP_ERROR_CHECK(uart_driver_install(UART_NUM_1, this->rx_buffer_size, 0, 0, NULL, 0));
 
-    xTaskCreate(this->rx_taskImpl, "uart_rx_task", configIDLE_TASK_STACK_SIZE * 5, this, configMAX_PRIORITIES - 5, &rxTaskHandle); //++ Create FreeRtos Tasks //todo tamanho da memoria
-    xTaskCreate(this->tx_taskImpl, "uart_tx_task", configIDLE_TASK_STACK_SIZE * 5, this, configMAX_PRIORITIES - 6, &txTaskHandle);
+    xTaskCreate(this->rx_taskImpl, "uart_rx_task", configIDLE_TASK_STACK_SIZE * 12, this, configMAX_PRIORITIES - 5, &rxTaskHandle); //++ Increase stack to avoid overflow
+    xTaskCreate(this->tx_taskImpl, "uart_tx_task", configIDLE_TASK_STACK_SIZE * 6, this, configMAX_PRIORITIES - 6, &txTaskHandle);
 
     this->RX_UNLOCK();
 }
@@ -591,7 +591,7 @@ void A7672SA::simcomm_response_parser(const char *data)
              }
              if (et)
              {
-                 // Copy token after etag: "4094025aeef973f79d646563d890ba49" 
+                 // Copy token after etag: "4094025aeef973f79d646563d890ba49"
                  char tag[sizeof(this->http_response_data.http_etag)] = {0};
                  if (sscanf(et, "etag: \"%32s\"", tag) == 1 || sscanf(et, "ETag: \"%32s\"", tag) == 1)
                  {
