@@ -116,8 +116,9 @@ void A7672SA::sendCommand(const char *logName, const char *data, bool publish)
 #endif
     this->at_ok = false;
     commandMessage message;
-    strcpy(message.logName, logName);
-    strcpy(message.data, data);
+    memset(&message, 0, sizeof(message));
+    strncpy(message.logName, logName, sizeof(message.logName) - 1);
+    strncpy(message.data, data, sizeof(message.data) - 1);
     xQueueSend(uartQueue, &message, portMAX_DELAY);
 }
 
@@ -128,8 +129,10 @@ void A7672SA::sendCommand(const char *logName, uint8_t *data, int len, bool publ
 #endif
     this->at_ok = false;
     commandMessage message;
-    strcpy(message.logName, logName);
-    memcpy(message.data, data, len);
+    memset(&message, 0, sizeof(message));
+    strncpy(message.logName, logName, sizeof(message.logName) - 1);
+    int copy_len = len < (int)sizeof(message.data) ? len : (int)sizeof(message.data);
+    memcpy(message.data, data, copy_len);
     xQueueSend(uartQueue, &message, portMAX_DELAY);
 }
 
@@ -214,7 +217,7 @@ void A7672SA::rx_task() //++ UART Receive Task
         }
         // Evitar bloqueio aqui para não interagir com priority inheritance de mutexes internos do driver UART
         // e reduzir chance do assert vTaskPriorityDisinheritAfterTimeout durante contenção.
-        const int rxBytes = uart_read_bytes(UART_NUM_1, this->at_response, this->rx_buffer_size, 0);
+        const int rxBytes = uart_read_bytes(UART_NUM_1, this->at_response, this->rx_buffer_size, pdMS_TO_TICKS(50));
         if (rxBytes > 0)
         {
             this->at_response[rxBytes] = 0;
@@ -339,8 +342,8 @@ void A7672SA::REINIT_UART(uint32_t resize, bool at_ready)
     ESP_ERROR_CHECK(uart_set_pin(UART_NUM_1, tx_pin, rx_pin, UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE));
     ESP_ERROR_CHECK(uart_driver_install(UART_NUM_1, this->rx_buffer_size, 0, 0, NULL, 0));
 
-    xTaskCreate(this->rx_taskImpl, "uart_rx_task", configIDLE_TASK_STACK_SIZE * 12, this, configMAX_PRIORITIES - 5, &rxTaskHandle); //++ Increase stack to avoid overflow
-    xTaskCreate(this->tx_taskImpl, "uart_tx_task", configIDLE_TASK_STACK_SIZE * 6, this, configMAX_PRIORITIES - 6, &txTaskHandle);
+    xTaskCreate(this->rx_taskImpl, "uart_rx_task", configIDLE_TASK_STACK_SIZE * 12, this, configMAX_PRIORITIES - 3, &rxTaskHandle); //++ Increase stack to avoid overflow
+    xTaskCreate(this->tx_taskImpl, "uart_tx_task", configIDLE_TASK_STACK_SIZE * 6, this, configMAX_PRIORITIES - 4, &txTaskHandle);
 
     this->RX_UNLOCK();
 }
@@ -449,6 +452,7 @@ void A7672SA::simcomm_response_parser(const char *data)
          {
              ESP_LOGV("PARSER", "Publish OK");
              this->at_publish = true;
+             //  this->publishing = false;
          }},
         {"CMQTTSUB: 0,0" GSM_NL, [this](const char *data, const char *found)
          {
@@ -986,7 +990,7 @@ bool A7672SA::wait_for_condition(uint32_t timeout, std::function<bool()> conditi
 
     while (!condition_check() && millis() - start < timeout)
     {
-        const int rxBytes = uart_read_bytes(UART_NUM_1, this->at_response, this->rx_buffer_size, 250 / portTICK_RATE_MS);
+        const int rxBytes = uart_read_bytes(UART_NUM_1, this->at_response, this->rx_buffer_size, pdMS_TO_TICKS(50));
         if (rxBytes > 0)
         {
             this->at_response[rxBytes] = 0;
@@ -1681,14 +1685,10 @@ bool A7672SA::mqtt_publish(const char *topic, uint8_t *data, size_t len, uint16_
         return false;
     }
 
-    // Check for forbidden sequences "AT" //todo testar
-    for (size_t i = 0; i + 2 < len; ++i)
+    if (this->mqtt_connected == false)
     {
-        if (data[i] == 'A' && data[i + 1] == 'T')
-        {
-            ESP_LOGE("MQTT_PUBLISH", "Payload contains forbidden sequence 'AT': reject");
-            return false;
-        }
+        ESP_LOGE("MQTT_PUBLISH", "Not connected to MQTT broker");
+        return false;
     }
 
     const size_t data_size = strlen(topic) + len + 50;
@@ -1698,15 +1698,18 @@ bool A7672SA::mqtt_publish(const char *topic, uint8_t *data, size_t len, uint16_
     this->at_publish = false;
     this->at_input = false;
     sprintf(data_string, "AT+CMQTTPUB=0,\"%s\",%d,%d" GSM_NL, topic, qos, len);
+    // this->publishing = true;
     this->sendCommand("MQTT_PUBLISH_CMD", data_string);
     if (this->wait_input(timeout))
     {
         this->send_cmd_to_simcomm("MQTT_PUBLISH_DATA", data, len);
         if (this->wait_publish(timeout))
         {
+            // this->publishing = false;
             return true;
         }
     }
+    // this->publishing = false;
     return false;
 }
 
@@ -2000,7 +2003,7 @@ size_t A7672SA::fs_read(size_t read_size, uint8_t *buffer, uint32_t timeout)
     sprintf(cmd, "AT+FSREAD=1,%d" GSM_NL, read_size);
 
     this->sendCommand("FS", cmd);
-    const int rxBytes = uart_read_bytes(UART_NUM_1, this->at_response, this->rx_buffer_size, 250 / portTICK_RATE_MS);
+    const int rxBytes = uart_read_bytes(UART_NUM_1, this->at_response, this->rx_buffer_size, pdMS_TO_TICKS(50));
 
     if (rxBytes > 0)
     {
@@ -2037,7 +2040,7 @@ size_t A7672SA::http_read_response(uint8_t *buffer, size_t read_size, size_t off
     sprintf(cmd, "AT+HTTPREAD=%d,%d" GSM_NL, offset, read_size);
 
     this->sendCommand("HTTP", cmd);
-    const int rxBytes = uart_read_bytes(UART_NUM_1, this->at_response, this->rx_buffer_size, 250 / portTICK_RATE_MS);
+    const int rxBytes = uart_read_bytes(UART_NUM_1, this->at_response, this->rx_buffer_size, pdMS_TO_TICKS(50));
 
     if (rxBytes > 0)
     {
