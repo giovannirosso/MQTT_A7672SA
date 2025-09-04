@@ -242,7 +242,7 @@ public:
     bool set_network_mode(network_mode mode, uint32_t timeout = 1000);
     std::vector<NetworkOperator> get_operator_list(uint32_t timeout = 60000);
 
-    bool set_operator(NetworkOperator op, uint32_t timeout = 1000);
+    bool set_operator(bool automatic, NetworkOperator op, uint32_t timeout = 1000);
     bool set_apn(const char *apn, const char *user, const char *password, uint32_t timeout = 1000);
     bool set_ntp_server(const char *ntp_server, int time_zone, uint32_t timeout = 1000);
 

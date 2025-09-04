@@ -16,6 +16,9 @@ A7672SA::A7672SA()
     this->http_response = false;
     this->publishing = false;
     this->operators_list_updated = false;
+    this->on_message_callback_ = nullptr;
+    this->on_mqtt_status_ = nullptr;
+    this->at_response = nullptr;
 }
 
 A7672SA::A7672SA(gpio_num_t tx_pin, gpio_num_t rx_pin, gpio_num_t en_pin, int32_t baud_rate, uint32_t rx_buffer_size)
@@ -28,6 +31,9 @@ A7672SA::A7672SA(gpio_num_t tx_pin, gpio_num_t rx_pin, gpio_num_t en_pin, int32_
     this->http_response = false;
     this->publishing = false;
     this->operators_list_updated = false;
+    this->on_message_callback_ = nullptr;
+    this->on_mqtt_status_ = nullptr;
+    this->at_response = nullptr;
 
     this->tx_pin = tx_pin;
     this->rx_pin = rx_pin;
@@ -1152,15 +1158,26 @@ int A7672SA::signal_quality(uint32_t timeout)
     return 0;
 }
 
-bool A7672SA::set_operator(NetworkOperator op, uint32_t timeout)
+bool A7672SA::set_operator(bool automatic, NetworkOperator op, uint32_t timeout)
 {
     if (this->publishing)
         return false;
 
-    char data[100];
-    sprintf(data, "AT+COPS=0,2,\"%s\",%d" GSM_NL, op.numeric_code, op.access_tech);
-    ESP_LOGV("SET_OPERATOR", "AT+COPS=0,2,\"%s\",%d", op.numeric_code, op.access_tech);
-    this->sendCommand("SET_OPERATOR", data);
+    if (automatic)
+    {
+        char data[20];
+        sprintf(data, "AT+COPS=0");
+        ESP_LOGV("SET_OPERATOR", "AT+COPS=0");
+        this->sendCommand("SET_OPERATOR", data);
+    }
+    else
+    {
+        char data[100];
+        // 1 = manual, 2 = formato numérico
+        sprintf(data, "AT+COPS=1,2,\"%s\",%d" GSM_NL, op.numeric_code, op.access_tech);
+        ESP_LOGV("SET_OPERATOR", "AT+COPS=1,2,\"%s\",%d", op.numeric_code, op.access_tech);
+        this->sendCommand("SET_OPERATOR", data);
+    }
 
     return this->wait_response(timeout);
 }
@@ -1685,11 +1702,8 @@ bool A7672SA::mqtt_publish(const char *topic, uint8_t *data, size_t len, uint16_
         return false;
     }
 
-    if (this->mqtt_connected == false)
-    {
-        ESP_LOGE("MQTT_PUBLISH", "Not connected to MQTT broker");
+    if (!PUBLISH_LOCK(timeout))
         return false;
-    }
 
     const size_t data_size = strlen(topic) + len + 50;
     char data_string[data_size];
@@ -1700,17 +1714,17 @@ bool A7672SA::mqtt_publish(const char *topic, uint8_t *data, size_t len, uint16_
     sprintf(data_string, "AT+CMQTTPUB=0,\"%s\",%d,%d" GSM_NL, topic, qos, len);
     // this->publishing = true;
     this->sendCommand("MQTT_PUBLISH_CMD", data_string);
+    bool ok = false;
     if (this->wait_input(timeout))
     {
         this->send_cmd_to_simcomm("MQTT_PUBLISH_DATA", data, len);
         if (this->wait_publish(timeout))
         {
-            // this->publishing = false;
-            return true;
+            ok = true;
         }
     }
-    // this->publishing = false;
-    return false;
+    PUBLISH_UNLOCK();
+    return ok;
 }
 
 bool A7672SA::mqtt_subscribe_topics(const char *topic[10], int n_topics, uint16_t qos, uint32_t timeout)
