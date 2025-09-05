@@ -19,6 +19,11 @@ A7672SA::A7672SA()
     this->on_message_callback_ = nullptr;
     this->on_mqtt_status_ = nullptr;
     this->at_response = nullptr;
+    this->uartQueue = NULL;
+    this->rxTaskHandle = NULL;
+    this->txTaskHandle = NULL;
+    this->rx_guard = NULL;
+    this->publish_guard = NULL;
 }
 
 A7672SA::A7672SA(gpio_num_t tx_pin, gpio_num_t rx_pin, gpio_num_t en_pin, int32_t baud_rate, uint32_t rx_buffer_size)
@@ -34,11 +39,16 @@ A7672SA::A7672SA(gpio_num_t tx_pin, gpio_num_t rx_pin, gpio_num_t en_pin, int32_
     this->on_message_callback_ = nullptr;
     this->on_mqtt_status_ = nullptr;
     this->at_response = nullptr;
+    this->uartQueue = NULL;
+    this->rxTaskHandle = NULL;
+    this->txTaskHandle = NULL;
+    this->rx_guard = NULL;
+    this->publish_guard = NULL;
 
     this->tx_pin = tx_pin;
     this->rx_pin = rx_pin;
     this->en_pin = en_pin;
-    this->rx_buffer_size = rx_buffer_size;
+    this->rx_buffer_size = rx_buffer_size < 128 ? 128 : rx_buffer_size;
 
     const uart_config_t uart_config =
         {
@@ -50,28 +60,15 @@ A7672SA::A7672SA(gpio_num_t tx_pin, gpio_num_t rx_pin, gpio_num_t en_pin, int32_
             .source_clk = UART_SCLK_APB,
         };
 
-    ESP_ERROR_CHECK(uart_driver_install(UART_NUM_1, rx_buffer_size * 2, 0, 0, NULL, 0));
+    ESP_ERROR_CHECK(uart_driver_install(UART_NUM_1, this->rx_buffer_size * 2, 0, 0, NULL, 0));
     ESP_ERROR_CHECK(uart_param_config(UART_NUM_1, &uart_config));
     ESP_ERROR_CHECK(uart_set_pin(UART_NUM_1, tx_pin, rx_pin, UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE));
 }
 
 A7672SA::~A7672SA()
 {
-    if (this->mqtt_connected)
-    {
-        this->mqtt_disconnect();
-    }
-
-    if (this->at_response != NULL)
-    {
-        free(this->at_response);
-    }
-
-    uart_driver_delete(UART_NUM_1);
-
-    gpio_set_level(this->en_pin, 1);
-
-    ESP_LOGV("DESTRUCTOR", "SIMCOMM Stopped");
+    (void)this->stop();
+    ESP_LOGV("DESTRUCTOR", "SIMCOMM Stopped (dtor)");
 }
 
 bool A7672SA::begin()
@@ -85,13 +82,38 @@ bool A7672SA::begin()
     gpio_set_level(this->en_pin, 0);
     vTaskDelay(5000 / portTICK_PERIOD_MS);
 
+    // Prepare response buffer early to avoid races
+    if (this->at_response == NULL)
+    {
+        this->at_response = (char *)malloc(this->rx_buffer_size + 1);
+        if (this->at_response == NULL)
+        {
+            ESP_LOGE("BEGIN", "Failed to allocate at_response buffer");
+            return false;
+        }
+    }
+
     this->rx_guard = xSemaphoreCreateMutex();               //++ Create FreeRtos Semaphore
     this->publish_guard = xSemaphoreCreateRecursiveMutex(); //++ Recursive Mutex for publish (reentrancy-safe)
 
     uartQueue = xQueueCreate(UART_QUEUE_SIZE, sizeof(commandMessage));
 
-    xTaskCreate(this->rx_taskImpl, "uart_rx_task", configIDLE_TASK_STACK_SIZE * 12, this, configMAX_PRIORITIES - 5, &rxTaskHandle); //++ Increase stack to avoid overflow
-    xTaskCreate(this->tx_taskImpl, "uart_tx_task", configIDLE_TASK_STACK_SIZE * 6, this, configMAX_PRIORITIES - 6, &txTaskHandle);
+    if (uartQueue == NULL)
+    {
+        ESP_LOGE("BEGIN", "Failed to create UART queue");
+        return false;
+    }
+
+    if (xTaskCreate(this->rx_taskImpl, "uart_rx_task", configIDLE_TASK_STACK_SIZE * 12, this, configMAX_PRIORITIES - 5, &rxTaskHandle) != pdPASS)
+    {
+        ESP_LOGE("BEGIN", "Failed to create RX task");
+        return false;
+    }
+    if (xTaskCreate(this->tx_taskImpl, "uart_tx_task", configIDLE_TASK_STACK_SIZE * 6, this, configMAX_PRIORITIES - 6, &txTaskHandle) != pdPASS)
+    {
+        ESP_LOGE("BEGIN", "Failed to create TX task");
+        return false;
+    }
 
     ESP_LOGV("BEGIN", "SIMCOMM Started");
     return true;
@@ -104,14 +126,35 @@ bool A7672SA::stop()
         this->mqtt_disconnect();
     }
 
+    DEINIT_UART();
+
     if (this->at_response != NULL)
     {
         free(this->at_response);
+        this->at_response = NULL;
     }
 
-    DEINIT_UART();
+    // Cleanup RTOS objects
+    if (this->uartQueue)
+    {
+        vQueueDelete(this->uartQueue);
+        this->uartQueue = NULL;
+    }
+    if (this->rx_guard)
+    {
+        vSemaphoreDelete(this->rx_guard);
+        this->rx_guard = NULL;
+    }
+    if (this->publish_guard)
+    {
+        vSemaphoreDelete(this->publish_guard);
+        this->publish_guard = NULL;
+    }
 
-    ESP_LOGV("STOP", "SIMCOMM Stopped");
+    // Put modem in disabled state via EN pin (if configured)
+    gpio_set_level(this->en_pin, 1);
+
+    ESP_LOGV("STOP", "SIMCOMM Stopped (stop)");
     return true;
 }
 
@@ -120,6 +163,11 @@ void A7672SA::sendCommand(const char *logName, const char *data, bool publish)
 #ifdef DEBUG_LTE
     ESP_LOGV("SEND_COMMAND", "ok:%d", this->at_ok);
 #endif
+    if (this->uartQueue == NULL)
+    {
+        ESP_LOGW("SEND_COMMAND", "uartQueue is NULL, ignoring command %s", logName);
+        return;
+    }
     this->at_ok = false;
     commandMessage message;
     memset(&message, 0, sizeof(message));
@@ -133,6 +181,11 @@ void A7672SA::sendCommand(const char *logName, uint8_t *data, int len, bool publ
 #ifdef DEBUG_LTE
     ESP_LOGV("SEND_COMMAND", "ok:%d", this->at_ok);
 #endif
+    if (this->uartQueue == NULL)
+    {
+        ESP_LOGW("SEND_COMMAND", "uartQueue is NULL, ignoring command %s", logName);
+        return;
+    }
     this->at_ok = false;
     commandMessage message;
     memset(&message, 0, sizeof(message));
@@ -144,7 +197,7 @@ void A7672SA::sendCommand(const char *logName, uint8_t *data, int len, bool publ
 
 bool A7672SA::receiveCommand(commandMessage *message)
 {
-    if (uxQueueMessagesWaiting(uartQueue) > 0)
+    if (this->uartQueue != NULL && uxQueueMessagesWaiting(uartQueue) > 0)
     {
         xQueueReceive(uartQueue, message, 0);
         return true;
@@ -164,6 +217,8 @@ void A7672SA::tx_task()
 
     while (this->at_ready == false)
     {
+        if (!uart_is_driver_installed(UART_NUM_1))
+            vTaskDelete(NULL);
         send_cmd_to_simcomm("AT_READY", "AT+CFUN=1" GSM_NL);
         vTaskDelay(3000 / portTICK_PERIOD_MS);
         send_cmd_to_simcomm("AT_READY", "AT+CFUN?" GSM_NL);
@@ -193,6 +248,11 @@ void A7672SA::tx_task()
 
     while (1)
     {
+        if (!uart_is_driver_installed(UART_NUM_1))
+        {
+            ESP_LOGV(TX_TASK_TAG, "UART driver not installed, exiting TX task");
+            break;
+        }
         commandMessage receivedCommand;
         if (receiveCommand(&receivedCommand))
         {
@@ -211,10 +271,24 @@ void A7672SA::rx_task() //++ UART Receive Task
 {
     static const char *RX_TASK_TAG = "SIM_RX_TASK";
     esp_log_level_set(RX_TASK_TAG, ESP_LOG_INFO);
-    this->at_response = (char *)malloc(this->rx_buffer_size + 1);
+    if (this->at_response == NULL)
+    {
+        this->at_response = (char *)malloc(this->rx_buffer_size + 1);
+        if (this->at_response == NULL)
+        {
+            ESP_LOGE(RX_TASK_TAG, "Failed to allocate at_response buffer in RX task");
+            vTaskDelete(NULL);
+        }
+    }
 
     while (1)
     {
+        // Se UART foi desinstalado ou buffer foi liberado, encerre a task com segurança
+        if (!uart_is_driver_installed(UART_NUM_1) || this->at_response == NULL)
+        {
+            ESP_LOGV(RX_TASK_TAG, "UART driver not installed or buffer null, exiting RX task");
+            break;
+        }
         // Tente pegar o mutex sem bloquear; se ocupado por outra tarefa (ex.: OTA), ceda e tente depois.
         if (this->rx_guard && xSemaphoreTake(this->rx_guard, 0) != pdPASS)
         {
@@ -246,7 +320,7 @@ void A7672SA::rx_task() //++ UART Receive Task
             xSemaphoreGive(this->rx_guard);
         vTaskDelay(10 / portTICK_PERIOD_MS);
     }
-    free(this->at_response);
+    // Buffer liberado por stop() após tasks serem encerradas
 }
 
 void A7672SA::RX_LOCK(uint32_t timeout)
@@ -314,10 +388,18 @@ void A7672SA::PUBLISH_UNLOCK()
 
 void A7672SA::DEINIT_UART()
 {
-    this->RX_LOCK();
-
-    vTaskDelete(rxTaskHandle);
-    vTaskDelete(txTaskHandle);
+    // Ensure tasks are terminated before removing the driver to avoid uart_read_bytes errors
+    // No need to hold RX mutex while force-deleting tasks
+    if (rxTaskHandle)
+    {
+        vTaskDelete(rxTaskHandle);
+        rxTaskHandle = NULL;
+    }
+    if (txTaskHandle)
+    {
+        vTaskDelete(txTaskHandle);
+        txTaskHandle = NULL;
+    }
 
     if (uart_is_driver_installed(UART_NUM_1))
     {
@@ -348,8 +430,29 @@ void A7672SA::REINIT_UART(uint32_t resize, bool at_ready)
     ESP_ERROR_CHECK(uart_set_pin(UART_NUM_1, tx_pin, rx_pin, UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE));
     ESP_ERROR_CHECK(uart_driver_install(UART_NUM_1, this->rx_buffer_size, 0, 0, NULL, 0));
 
-    xTaskCreate(this->rx_taskImpl, "uart_rx_task", configIDLE_TASK_STACK_SIZE * 12, this, configMAX_PRIORITIES - 3, &rxTaskHandle); //++ Increase stack to avoid overflow
-    xTaskCreate(this->tx_taskImpl, "uart_tx_task", configIDLE_TASK_STACK_SIZE * 6, this, configMAX_PRIORITIES - 4, &txTaskHandle);
+    // Ensure response buffer matches new size
+    size_t new_size = this->rx_buffer_size + 1;
+    if (this->at_response != NULL)
+    {
+        char *nbuf = (char *)realloc(this->at_response, new_size);
+        if (nbuf != NULL)
+        {
+            this->at_response = nbuf;
+        }
+        else
+        {
+            // fallback: free and allocate new to avoid using wrong-sized buffer
+            free(this->at_response);
+            this->at_response = (char *)malloc(new_size);
+        }
+    }
+    else
+    {
+        this->at_response = (char *)malloc(new_size);
+    }
+
+    xTaskCreate(this->rx_taskImpl, "uart_rx_task", configIDLE_TASK_STACK_SIZE * 12, this, configMAX_PRIORITIES - 5, &rxTaskHandle); //++ Increase stack to avoid overflow
+    xTaskCreate(this->tx_taskImpl, "uart_tx_task", configIDLE_TASK_STACK_SIZE * 6, this, configMAX_PRIORITIES - 6, &txTaskHandle);
 
     this->RX_UNLOCK();
 }
@@ -953,6 +1056,8 @@ bool A7672SA::restart(uint32_t timeout)
 
 int A7672SA::send_cmd_to_simcomm(const char *logName, uint8_t *data, int len) //++ Sending AT Commands to Simcomm via UART
 {
+    if (!uart_is_driver_installed(UART_NUM_1))
+        return 0;
     const int txBytes = uart_write_bytes(UART_NUM_1, data, len);
 #ifdef DEBUG_LTE
     ESP_LOGV(logName, "Wrote %d bytes of %d requested", txBytes, len);
@@ -968,6 +1073,8 @@ int A7672SA::send_cmd_to_simcomm(const char *logName, uint8_t *data, int len) //
 
 int A7672SA::send_cmd_to_simcomm(const char *logName, const char *data) //++ Sending AT Commands to Simcomm via UART
 {
+    if (!uart_is_driver_installed(UART_NUM_1))
+        return 0;
     const int len = strlen(data);
     const int txBytes = uart_write_bytes(UART_NUM_1, data, len);
 #ifdef DEBUG_LTE
@@ -996,11 +1103,18 @@ bool A7672SA::wait_for_condition(uint32_t timeout, std::function<bool()> conditi
 
     while (!condition_check() && millis() - start < timeout)
     {
-        const int rxBytes = uart_read_bytes(UART_NUM_1, this->at_response, this->rx_buffer_size, pdMS_TO_TICKS(50));
+        int rxBytes = 0;
+        if (uart_is_driver_installed(UART_NUM_1) && this->at_response != NULL)
+        {
+            rxBytes = uart_read_bytes(UART_NUM_1, this->at_response, this->rx_buffer_size, 250 / portTICK_RATE_MS);
+        }
         if (rxBytes > 0)
         {
-            this->at_response[rxBytes] = 0;
-            this->simcomm_response_parser(this->at_response);
+            if (this->at_response)
+            {
+                this->at_response[rxBytes] = 0;
+                this->simcomm_response_parser(this->at_response);
+            }
         }
         vTaskDelay(10 / portTICK_PERIOD_MS);
     }
@@ -2017,7 +2131,9 @@ size_t A7672SA::fs_read(size_t read_size, uint8_t *buffer, uint32_t timeout)
     sprintf(cmd, "AT+FSREAD=1,%d" GSM_NL, read_size);
 
     this->sendCommand("FS", cmd);
-    const int rxBytes = uart_read_bytes(UART_NUM_1, this->at_response, this->rx_buffer_size, pdMS_TO_TICKS(50));
+    int rxBytes = 0;
+    if (uart_is_driver_installed(UART_NUM_1) && this->at_response != NULL)
+        rxBytes = uart_read_bytes(UART_NUM_1, this->at_response, this->rx_buffer_size, 250 / portTICK_RATE_MS);
 
     if (rxBytes > 0)
     {
@@ -2054,7 +2170,9 @@ size_t A7672SA::http_read_response(uint8_t *buffer, size_t read_size, size_t off
     sprintf(cmd, "AT+HTTPREAD=%d,%d" GSM_NL, offset, read_size);
 
     this->sendCommand("HTTP", cmd);
-    const int rxBytes = uart_read_bytes(UART_NUM_1, this->at_response, this->rx_buffer_size, pdMS_TO_TICKS(50));
+    int rxBytes = 0;
+    if (uart_is_driver_installed(UART_NUM_1) && this->at_response != NULL)
+        rxBytes = uart_read_bytes(UART_NUM_1, this->at_response, this->rx_buffer_size, pdMS_TO_TICKS(50));
 
     if (rxBytes > 0)
     {
