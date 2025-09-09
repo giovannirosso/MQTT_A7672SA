@@ -388,8 +388,8 @@ void A7672SA::PUBLISH_UNLOCK()
 
 void A7672SA::DEINIT_UART()
 {
-    // Ensure tasks are terminated before removing the driver to avoid uart_read_bytes errors
-    // No need to hold RX mutex while force-deleting tasks
+    this->RX_LOCK();
+
     if (rxTaskHandle)
     {
         vTaskDelete(rxTaskHandle);
