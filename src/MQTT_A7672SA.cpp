@@ -1815,7 +1815,15 @@ bool A7672SA::mqtt_publish(const char *topic, uint8_t *data, size_t len, uint16_
         ESP_LOGE("MQTT_PUBLISH", "Data is null or length is zero");
         return false;
     }
-    this->publishing = true;
+    // this->publishing = true;
+    if (this->publishing)
+        return false;
+
+    if(!this->PUBLISH_LOCK(timeout))
+    {
+        ESP_LOGW("MQTT_PUBLISH", "LTE publish lock timeout");
+        return false;
+    }
 
     const size_t data_size = strlen(topic) + len + 50;
     char data_string[data_size];
@@ -1834,7 +1842,10 @@ bool A7672SA::mqtt_publish(const char *topic, uint8_t *data, size_t len, uint16_
             ok = true;
         }
     }
-    this->publishing = false;
+
+    // this->publishing = false;
+
+    this->PUBLISH_UNLOCK();
     return ok;
 }
 
