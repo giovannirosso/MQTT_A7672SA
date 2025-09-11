@@ -1106,7 +1106,7 @@ bool A7672SA::wait_for_condition(uint32_t timeout, std::function<bool()> conditi
         int rxBytes = 0;
         if (uart_is_driver_installed(UART_NUM_1) && this->at_response != NULL)
         {
-            rxBytes = uart_read_bytes(UART_NUM_1, this->at_response, this->rx_buffer_size, 250 / portTICK_RATE_MS);
+            rxBytes = uart_read_bytes(UART_NUM_1, this->at_response, this->rx_buffer_size, 0);
         }
         if (rxBytes > 0)
         {
@@ -1815,9 +1815,7 @@ bool A7672SA::mqtt_publish(const char *topic, uint8_t *data, size_t len, uint16_
         ESP_LOGE("MQTT_PUBLISH", "Data is null or length is zero");
         return false;
     }
-
-    if (!PUBLISH_LOCK(timeout))
-        return false;
+    this->publishing = true;
 
     const size_t data_size = strlen(topic) + len + 50;
     char data_string[data_size];
@@ -1826,7 +1824,6 @@ bool A7672SA::mqtt_publish(const char *topic, uint8_t *data, size_t len, uint16_
     this->at_publish = false;
     this->at_input = false;
     sprintf(data_string, "AT+CMQTTPUB=0,\"%s\",%d,%d" GSM_NL, topic, qos, len);
-    // this->publishing = true;
     this->sendCommand("MQTT_PUBLISH_CMD", data_string);
     bool ok = false;
     if (this->wait_input(timeout))
@@ -1837,7 +1834,7 @@ bool A7672SA::mqtt_publish(const char *topic, uint8_t *data, size_t len, uint16_
             ok = true;
         }
     }
-    PUBLISH_UNLOCK();
+    this->publishing = false;
     return ok;
 }
 
