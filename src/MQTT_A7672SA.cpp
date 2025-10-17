@@ -230,6 +230,11 @@ void A7672SA::tx_task()
         send_cmd_to_simcomm("AT_ATE0", "ATE0" GSM_NL);
         vTaskDelay(500 / portTICK_PERIOD_MS);
 
+        send_cmd_to_simcomm("AT+CSCS", "AT+CSCS?" GSM_NL);
+        vTaskDelay(500 / portTICK_PERIOD_MS);
+        send_cmd_to_simcomm("AT+CSCS=HEX", "AT+CSCS=\"HEX\"" GSM_NL); // IRA, UCS2, GSM, HEX
+        vTaskDelay(500 / portTICK_PERIOD_MS);
+
         send_cmd_to_simcomm("CMEE", "AT+CMEE=2" GSM_NL); // verbose errors
         vTaskDelay(500 / portTICK_PERIOD_MS);
         send_cmd_to_simcomm("CREG=1", "AT+CREG=1" GSM_NL); // URC de registro 2G
@@ -302,7 +307,7 @@ void A7672SA::rx_task() //++ UART Receive Task
         {
             this->at_response[rxBytes] = 0;
 #ifdef DEBUG_LTE
-            ESP_LOGV(RX_TASK_TAG, "Read %d bytes: '%s'", rxBytes, this->at_response);
+            ESP_LOGV(RX_TASK_TAG, "Read %d bytes, content: '%s'", rxBytes, this->at_response);
 #endif
             int n_messages = 0;
             char **messages = this->simcom_split_messages(this->at_response, &n_messages);
@@ -1819,7 +1824,7 @@ bool A7672SA::mqtt_publish(const char *topic, uint8_t *data, size_t len, uint16_
     if (this->publishing)
         return false;
 
-    if(!this->PUBLISH_LOCK(timeout))
+    if (!this->PUBLISH_LOCK(timeout))
     {
         ESP_LOGW("MQTT_PUBLISH", "LTE publish lock timeout");
         return false;
