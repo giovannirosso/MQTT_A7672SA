@@ -230,9 +230,9 @@ void A7672SA::tx_task()
         send_cmd_to_simcomm("AT_ATE0", "ATE0" GSM_NL);
         vTaskDelay(500 / portTICK_PERIOD_MS);
 
-        send_cmd_to_simcomm("AT+CSCS", "AT+CSCS?" GSM_NL);
-        vTaskDelay(500 / portTICK_PERIOD_MS);
-        send_cmd_to_simcomm("AT+CSCS=HEX", "AT+CSCS=\"HEX\"" GSM_NL); // IRA, UCS2, GSM, HEX
+        // send_cmd_to_simcomm("AT+CSCS", "AT+CSCS?" GSM_NL); // this is for SMS character set only
+        // vTaskDelay(500 / portTICK_PERIOD_MS);
+        // send_cmd_to_simcomm("AT+CSCS=HEX", "AT+CSCS=\"HEX\"" GSM_NL); // IRA, UCS2, GSM, HEX
         vTaskDelay(500 / portTICK_PERIOD_MS);
 
         send_cmd_to_simcomm("CMEE", "AT+CMEE=2" GSM_NL); // verbose errors
@@ -243,6 +243,9 @@ void A7672SA::tx_task()
         vTaskDelay(500 / portTICK_PERIOD_MS);
         send_cmd_to_simcomm("CEREG=1", "AT+CEREG=1" GSM_NL); // URC de registro LTE
         vTaskDelay(500 / portTICK_PERIOD_MS);
+
+        // send_cmd_to_simcomm("AT+SIMCOMATI", "AT+SIMCOMATI" GSM_NL); // info do módulo
+        // vTaskDelay(500 / portTICK_PERIOD_MS);
     }
 
     // send_cmd_to_simcomm("AT_ATV1", "ATV1" GSM_NL); // error roport
@@ -314,7 +317,7 @@ void A7672SA::rx_task() //++ UART Receive Task
             for (int i = 0; i < n_messages; i++)
             {
 #ifdef DEBUG_LTE
-                ESP_LOGV(RX_TASK_TAG, "Message %d: '%s'", i, messages[i]);
+                ESP_LOGI(RX_TASK_TAG, "Message %d: '%s'", i, messages[i]);
 #endif
                 this->simcomm_response_parser(messages[i]);
                 free(messages[i]);
@@ -1055,6 +1058,8 @@ void A7672SA::apply_cereg_(registration_status st)
 
 bool A7672SA::restart(uint32_t timeout)
 {
+    this->sendCommand("CFUN=0", "AT+CFUN=0" GSM_NL);
+    vTaskDelay(2000 / portTICK_PERIOD_MS);
     this->sendCommand("RESTART", "AT+CRESET" GSM_NL);
     return this->wait_response(timeout);
 }
@@ -1773,7 +1778,7 @@ bool A7672SA::mqtt_connect(const char *host, uint16_t port, const char *clientId
         if (this->wait_response(timeout))
         {
             char cmd[100];
-            sprintf(cmd, "AT+CMQTTACCQ=0,\"%s\"" GSM_NL, clientId);
+            sprintf(cmd, "AT+CMQTTACCQ=0,\"%s\",0" GSM_NL, clientId);
             this->sendCommand("MQTT_CONNECT", cmd);
             if (this->wait_response(timeout))
                 this->sendCommand("MQTT_CONNECT", "AT+CMQTTCFG=\"checkUTF8\",0,0" GSM_NL);
@@ -1926,7 +1931,7 @@ bool A7672SA::ping(const char *host, uint32_t timeout)
     }
 
     char data[128];
-    sprintf(data, "AT+CPING=\"%s\",1,2,64,1000,2000,255" GSM_NL, host);
+    sprintf(data, "AT+CPING=\"%s\",1" GSM_NL, host);
 
     this->sendCommand("PING", data);
     return this->wait_response(timeout);
